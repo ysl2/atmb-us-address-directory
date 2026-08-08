@@ -140,6 +140,73 @@ test('lists addresses with filters, pagination and stats', async (t) => {
   ]);
 });
 
+test('filters admin addresses by an inclusive dollar price range', async (t) => {
+  const { app } = await buildTestServer();
+  t.after(() => app.close());
+  const cookie = await loginCookie(app);
+
+  const requestList = async (query: string) => {
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/admin/addresses?${query}`,
+      headers: { cookie },
+    });
+
+    assert.equal(response.statusCode, 200);
+    return response.json() as { items: Array<{ priceCents: number }>; total: number };
+  };
+
+  const range = await requestList('minPrice=10&maxPrice=20&pageSize=100');
+  assert.ok(range.total > 0);
+  assert.ok(range.items.every((item) => item.priceCents >= 1000 && item.priceCents <= 2000));
+
+  const minimumOnly = await requestList('minPrice=20&pageSize=100');
+  assert.ok(minimumOnly.total > 0);
+  assert.ok(minimumOnly.items.every((item) => item.priceCents >= 2000));
+
+  const maximumOnly = await requestList('maxPrice=10&pageSize=100');
+  assert.ok(maximumOnly.total > 0);
+  assert.ok(maximumOnly.items.every((item) => item.priceCents <= 1000));
+
+  const decimalRange = await requestList('minPrice=14.99&maxPrice=14.99&pageSize=100');
+  assert.ok(decimalRange.total > 0);
+  assert.ok(decimalRange.items.every((item) => item.priceCents === 1499));
+
+  const legacyPrice = await requestList('price=lt20&pageSize=100');
+  assert.ok(legacyPrice.total > 0);
+  assert.ok(legacyPrice.items.every((item) => item.priceCents < 2000));
+
+  const rangeOverridesLegacyPrice = await requestList('price=gte20&maxPrice=10&pageSize=100');
+  assert.ok(rangeOverridesLegacyPrice.total > 0);
+  assert.ok(rangeOverridesLegacyPrice.items.every((item) => item.priceCents <= 1000));
+});
+
+test('rejects invalid admin address price ranges', async (t) => {
+  const { app } = await buildTestServer();
+  t.after(() => app.close());
+  const cookie = await loginCookie(app);
+
+  for (const query of ['minPrice=-1', 'maxPrice=10.123']) {
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/admin/addresses?${query}`,
+      headers: { cookie },
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().message, '价格必须是大于等于 0 且最多保留两位小数的美元金额');
+  }
+
+  const reversedRangeResponse = await app.inject({
+    method: 'GET',
+    url: '/api/admin/addresses?minPrice=20&maxPrice=10',
+    headers: { cookie },
+  });
+
+  assert.equal(reversedRangeResponse.statusCode, 400);
+  assert.equal(reversedRangeResponse.json().message, '最低价格不能高于最高价格');
+});
+
 test('lists discovered addresses that do not have RDI and CMRA yet', async (t) => {
   const databaseUrl = join(process.cwd(), `.address-discovered-${Date.now()}.sqlite`);
   rmSync(databaseUrl, { force: true });
@@ -202,6 +269,22 @@ test('lists discovered addresses that do not have RDI and CMRA yet', async (t) =
   assert.equal(body.items[0].cmra, null);
   assert.equal(body.items[0].recordSource, 'discovered');
   assert.equal(body.items[0].canEdit, false);
+
+  const includedByPriceResponse = await app.inject({
+    method: 'GET',
+    url: '/api/admin/addresses?keyword=Vancouver&minPrice=14.99&maxPrice=14.99',
+    headers: { cookie },
+  });
+  assert.equal(includedByPriceResponse.statusCode, 200);
+  assert.equal(includedByPriceResponse.json().total, 1);
+
+  const excludedByPriceResponse = await app.inject({
+    method: 'GET',
+    url: '/api/admin/addresses?keyword=Vancouver&maxPrice=14.98',
+    headers: { cookie },
+  });
+  assert.equal(excludedByPriceResponse.statusCode, 200);
+  assert.equal(excludedByPriceResponse.json().total, 0);
 });
 
 test('creates a Smarty sync task from selected discovered addresses', async (t) => {

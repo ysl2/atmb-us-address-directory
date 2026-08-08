@@ -21,6 +21,8 @@ export interface AddressQuery {
   cmra?: AddressCmraFilter;
   featured?: boolean;
   price?: AddressPriceFilter;
+  minPriceCents?: number;
+  maxPriceCents?: number;
   page?: number;
   pageSize?: number;
 }
@@ -210,12 +212,26 @@ export class AddressService {
       where.push('a.isFeatured = @featured');
     }
 
-    if (query.price === 'lt10') {
-      where.push('a.priceCents < 1000');
-    } else if (query.price === 'lt20') {
-      where.push('a.priceCents < 2000');
-    } else if (query.price === 'gte20') {
-      where.push('a.priceCents >= 2000');
+    const hasPriceRange = query.minPriceCents !== undefined || query.maxPriceCents !== undefined;
+
+    if (query.minPriceCents !== undefined) {
+      params.minPriceCents = query.minPriceCents;
+      where.push('a.priceCents >= @minPriceCents');
+    }
+
+    if (query.maxPriceCents !== undefined) {
+      params.maxPriceCents = query.maxPriceCents;
+      where.push('a.priceCents <= @maxPriceCents');
+    }
+
+    if (!hasPriceRange) {
+      if (query.price === 'lt10') {
+        where.push('a.priceCents < 1000');
+      } else if (query.price === 'lt20') {
+        where.push('a.priceCents < 2000');
+      } else if (query.price === 'gte20') {
+        where.push('a.priceCents >= 2000');
+      }
     }
 
     const whereSql = where.join(' AND ');

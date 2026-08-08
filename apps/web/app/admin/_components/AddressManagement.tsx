@@ -3,7 +3,6 @@
 import type {
   AddressCmra,
   AddressCmraFilter,
-  AddressPriceFilter,
   AddressRdi,
   AddressRdiFilter,
   AdminAddressListItem,
@@ -23,7 +22,8 @@ interface Filters {
   state: string;
   rdi: '' | AddressRdiFilter;
   cmra: '' | AddressCmraFilter;
-  price: AddressPriceFilter;
+  minPrice: string;
+  maxPrice: string;
   featured: '' | 'true' | 'false';
 }
 
@@ -32,7 +32,8 @@ const initialFilters: Filters = {
   state: '',
   rdi: '',
   cmra: '',
-  price: 'all',
+  minPrice: '',
+  maxPrice: '',
   featured: '',
 };
 
@@ -43,6 +44,32 @@ const emptyStats: AdminAddressStats = {
   todayAdded: 0,
   todayRemoved: 0,
 };
+
+function validatePriceRange(rawMinPrice: string, rawMaxPrice: string) {
+  const minPrice = rawMinPrice.trim();
+  const maxPrice = rawMaxPrice.trim();
+  const minPriceCents = parsePriceCents(minPrice);
+  const maxPriceCents = parsePriceCents(maxPrice);
+
+  if ((minPrice && minPriceCents === null) || (maxPrice && maxPriceCents === null)) {
+    return '价格必须是大于等于 0 且最多保留两位小数的美元金额。';
+  }
+
+  if (minPriceCents !== null && maxPriceCents !== null && minPriceCents > maxPriceCents) {
+    return '最低价格不能高于最高价格。';
+  }
+
+  return '';
+}
+
+function parsePriceCents(value: string) {
+  if (!value) return null;
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return null;
+
+  const [dollars, fraction = ''] = value.split('.');
+  const cents = Number(dollars) * 100 + Number(fraction.padEnd(2, '0'));
+  return Number.isSafeInteger(cents) ? cents : null;
+}
 
 export function AddressManagement() {
   const [filters, setFilters] = useState(initialFilters);
@@ -60,6 +87,7 @@ export function AddressManagement() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isUpdatingMailbox, setIsUpdatingMailbox] = useState(false);
   const [isCreatingSmartySyncTask, setIsCreatingSmartySyncTask] = useState(false);
+  const [priceFilterError, setPriceFilterError] = useState('');
   const [isPending, startTransition] = useTransition();
   const { toasts, showToast, dismissToast } = useAdminToasts();
 
@@ -71,7 +99,8 @@ export function AddressManagement() {
     if (appliedFilters.state) params.set('state', appliedFilters.state);
     if (appliedFilters.rdi) params.set('rdi', appliedFilters.rdi);
     if (appliedFilters.cmra) params.set('cmra', appliedFilters.cmra);
-    if (appliedFilters.price !== 'all') params.set('price', appliedFilters.price);
+    if (appliedFilters.minPrice.trim()) params.set('minPrice', appliedFilters.minPrice.trim());
+    if (appliedFilters.maxPrice.trim()) params.set('maxPrice', appliedFilters.maxPrice.trim());
     if (appliedFilters.featured) params.set('featured', appliedFilters.featured);
     return params.toString();
   }, [appliedFilters, page]);
@@ -118,6 +147,14 @@ export function AddressManagement() {
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const error = validatePriceRange(filters.minPrice, filters.maxPrice);
+
+    if (error) {
+      setPriceFilterError(error);
+      return;
+    }
+
+    setPriceFilterError('');
     setPage(1);
     setAppliedFilters(filters);
   }
@@ -125,11 +162,17 @@ export function AddressManagement() {
   function resetSearch() {
     setFilters(initialFilters);
     setAppliedFilters(initialFilters);
+    setPriceFilterError('');
     setPage(1);
   }
 
   function changeFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
     setFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  function changePriceFilter(key: 'minPrice' | 'maxPrice', value: string) {
+    changeFilter(key, value);
+    setPriceFilterError('');
   }
 
   async function createSyncTask() {
@@ -302,7 +345,7 @@ export function AddressManagement() {
         <Stat label="今日移除" value={stats.todayRemoved} />
       </section>
 
-      <form className="admin-filter-panel" onSubmit={submitSearch}>
+      <form className="admin-filter-panel" noValidate onSubmit={submitSearch}>
         <div className="admin-filter-title">筛选地址</div>
         <label className="wide">
           <span>关键词</span>
@@ -344,15 +387,46 @@ export function AddressManagement() {
             <option value="none">无</option>
           </select>
         </label>
-        <label>
-          <span>价格</span>
-          <select value={filters.price} onChange={(event) => changeFilter('price', event.target.value as AddressPriceFilter)}>
-            <option value="all">全部</option>
-            <option value="lt10">小于 $10</option>
-            <option value="lt20">小于 $20</option>
-            <option value="gte20">大于等于 $20</option>
-          </select>
-        </label>
+        <fieldset
+          className="admin-price-range-field"
+          aria-describedby={priceFilterError ? 'admin-price-filter-error' : undefined}
+        >
+          <legend>价格（US$ / 月）</legend>
+          <div className="admin-price-range-inputs">
+            <label>
+              <span className="home-visually-hidden">最低价格</span>
+              <input
+                aria-invalid={priceFilterError ? true : undefined}
+                inputMode="decimal"
+                min="0"
+                placeholder="最低"
+                step="0.01"
+                type="number"
+                value={filters.minPrice}
+                onChange={(event) => changePriceFilter('minPrice', event.target.value)}
+              />
+            </label>
+            <span aria-hidden="true">–</span>
+            <label>
+              <span className="home-visually-hidden">最高价格</span>
+              <input
+                aria-invalid={priceFilterError ? true : undefined}
+                inputMode="decimal"
+                min="0"
+                placeholder="最高"
+                step="0.01"
+                type="number"
+                value={filters.maxPrice}
+                onChange={(event) => changePriceFilter('maxPrice', event.target.value)}
+              />
+            </label>
+          </div>
+          {priceFilterError ? (
+            <p className="admin-price-filter-error" id="admin-price-filter-error" role="alert">
+              {priceFilterError}
+            </p>
+          ) : null}
+        </fieldset>
         <label>
           <span>精选</span>
           <select value={filters.featured} onChange={(event) => changeFilter('featured', event.target.value as Filters['featured'])}>

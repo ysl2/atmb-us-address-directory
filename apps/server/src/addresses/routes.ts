@@ -11,6 +11,18 @@ const cmraSchema = z.enum(['Yes', 'No']);
 const rdiFilterSchema = z.enum(['Residential', 'Commercial', 'none']);
 const cmraFilterSchema = z.enum(['Yes', 'No', 'none']);
 const priceSchema = z.enum(['all', 'lt10', 'lt20', 'gte20']);
+const dollarPriceSchema = z.preprocess(
+  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+  z.string()
+    .trim()
+    .regex(/^\d+(?:\.\d{1,2})?$/)
+    .transform((value) => {
+      const [dollars, fraction = ''] = value.split('.');
+      return Number(dollars) * 100 + Number(fraction.padEnd(2, '0'));
+    })
+    .refine(Number.isSafeInteger)
+    .optional(),
+);
 
 const querySchema = z.object({
   keyword: z.string().optional(),
@@ -19,6 +31,8 @@ const querySchema = z.object({
   cmra: cmraFilterSchema.optional(),
   featured: z.enum(['true', 'false']).optional(),
   price: priceSchema.optional(),
+  minPrice: dollarPriceSchema,
+  maxPrice: dollarPriceSchema,
   page: z.coerce.number().int().positive().optional(),
   pageSize: z.coerce.number().int().positive().optional(),
 });
@@ -58,12 +72,35 @@ export function registerAddressRoutes(
     const parsed = querySchema.safeParse(request.query);
 
     if (!parsed.success) {
+      const hasInvalidPrice = parsed.error.issues.some((issue) => (
+        issue.path[0] === 'minPrice' || issue.path[0] === 'maxPrice'
+      ));
+
+      if (hasInvalidPrice) {
+        return reply.code(400).send({ message: '价格必须是大于等于 0 且最多保留两位小数的美元金额' });
+      }
+
       return reply.code(400).send({ message: '筛选参数不正确' });
     }
 
+    if (
+      parsed.data.minPrice !== undefined
+      && parsed.data.maxPrice !== undefined
+      && parsed.data.minPrice > parsed.data.maxPrice
+    ) {
+      return reply.code(400).send({ message: '最低价格不能高于最高价格' });
+    }
+
+    const rawQuery = request.query as Record<string, unknown>;
+    const hasPriceRange = 'minPrice' in rawQuery || 'maxPrice' in rawQuery;
+    const { featured, maxPrice, minPrice, price, ...filters } = parsed.data;
+
     return addressService.listAddresses({
-      ...parsed.data,
-      featured: parsed.data.featured ? parsed.data.featured === 'true' : undefined,
+      ...filters,
+      featured: featured ? featured === 'true' : undefined,
+      price: hasPriceRange ? undefined : price,
+      minPriceCents: minPrice,
+      maxPriceCents: maxPrice,
     });
   });
 
