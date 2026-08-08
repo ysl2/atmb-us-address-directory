@@ -12,6 +12,7 @@ import type {
   AdminAddressListResponse,
   AdminAddressStats,
   AdminStateOption,
+  SmartyMatchStatus,
 } from '@atmb/shared';
 
 export interface AddressQuery {
@@ -75,6 +76,8 @@ interface AddressRow {
   pricePeriod: string;
   rdi: AddressRdi | null;
   cmra: AddressCmra | null;
+  smartyMatchStatus: SmartyMatchStatus | null;
+  smartyMatchMessage: string | null;
   mailboxMin: number | null;
   mailboxMax: number | null;
   mailboxCount: number | null;
@@ -113,6 +116,8 @@ const adminAddressRowsSql = `
     a.price_period AS pricePeriod,
     a.rdi,
     a.cmra,
+    a.smarty_match_status AS smartyMatchStatus,
+    a.smarty_match_message AS smartyMatchMessage,
     a.mailbox_min AS mailboxMin,
     a.mailbox_max AS mailboxMax,
     a.mailbox_count AS mailboxCount,
@@ -146,6 +151,8 @@ const adminAddressRowsSql = `
     stage.price_period AS pricePeriod,
     stage.rdi,
     stage.cmra,
+    stage.smarty_match_status AS smartyMatchStatus,
+    stage.smarty_match_message AS smartyMatchMessage,
     stage.mailbox_min AS mailboxMin,
     stage.mailbox_max AS mailboxMax,
     stage.mailbox_count AS mailboxCount,
@@ -285,6 +292,8 @@ export class AddressService {
           a.price_period AS pricePeriod,
           a.rdi,
           a.cmra,
+          a.smarty_match_status AS smartyMatchStatus,
+          a.smarty_match_message AS smartyMatchMessage,
           a.mailbox_min AS mailboxMin,
           a.mailbox_max AS mailboxMax,
           a.mailbox_count AS mailboxCount,

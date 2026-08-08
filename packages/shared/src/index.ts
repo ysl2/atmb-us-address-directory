@@ -19,6 +19,7 @@ export interface LoginResponse {
 
 export type AddressRdi = 'Residential' | 'Commercial';
 export type AddressCmra = 'Yes' | 'No';
+export type SmartyMatchStatus = 'verified' | 'uncertain';
 export type AddressRdiFilter = AddressRdi | 'none';
 export type AddressCmraFilter = AddressCmra | 'none';
 export type AddressPriceFilter = 'all' | 'lt10' | 'lt20' | 'gte20';
@@ -43,6 +44,8 @@ export interface AdminAddressListItem {
   pricePeriod: string;
   rdi: AddressRdi | null;
   cmra: AddressCmra | null;
+  smartyMatchStatus: SmartyMatchStatus | null;
+  smartyMatchMessage: string | null;
   mailboxMin: number | null;
   mailboxMax: number | null;
   mailboxCount: number | null;

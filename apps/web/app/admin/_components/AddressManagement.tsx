@@ -492,6 +492,11 @@ export function AddressManagement() {
                       {item.name}
                     </a>
                     {item.statusNote ? <span>{item.statusNote}</span> : null}
+                    {item.smartyMatchStatus === 'uncertain' ? (
+                      <span className="admin-smarty-match-warning" title={item.smartyMatchMessage ?? undefined}>
+                        Smarty 匹配不完整
+                      </span>
+                    ) : null}
                   </td>
                   <td>
                     <a className="address-table-link" href={item.anytimeUrl} rel="noreferrer" target="_blank">

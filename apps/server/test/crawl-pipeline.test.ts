@@ -660,6 +660,69 @@ test('reuses a successful Smarty result by normalized address when the URL chang
   assert.equal(rows[0]?.cmra, 'Yes');
 });
 
+test('does not reuse an uncertain Smarty cache result', async () => {
+  const smartyCalls: SmartyLookupInput[][] = [];
+  const harness = buildHarness([
+    crawledAddress({
+      name: 'Austin - Mopac Expy',
+      detailUrl: 'https://www.anytimemailbox.com/s/austin-14205-n-mopac-expy',
+      street: '14205 N Mopac Expy 5th Floor',
+      city: 'Austin',
+      state: 'TX',
+      zip: '78728',
+      price: 'US$ 19.99',
+      mailboxNumbers: ['100', '110'],
+    }),
+  ], {
+    async lookupAddresses(_credentials, inputs) {
+      smartyCalls.push(inputs);
+      return inputs.map((input) => ({
+        inputId: input.inputId,
+        rdi: 'Commercial',
+        cmra: 'No',
+        matchStatus: 'verified',
+        matchMessage: null,
+        raw: { metadata: { rdi: 'Commercial' }, analysis: { dpv_match_code: 'Y', dpv_cmra: 'N' } },
+      }));
+    },
+  });
+
+  insertAddress(harness.database, {
+    name: 'Austin - Mopac Expy',
+    slug: 'austin-mopac-expy',
+    anytimeUrl: 'https://www.anytimemailbox.com/s/austin-14205-n-mopac-expy',
+    streetAddress: '14205 N Mopac Expy 5th Floor',
+    city: 'Austin',
+    state: 'TX',
+    postalCode: '78728',
+    priceCents: 1999,
+    rdi: 'Residential',
+    cmra: 'No',
+    smartyCheckedAt: '2026-08-08T00:00:00.000Z',
+  });
+  harness.database.sqlite
+    .prepare(`
+      UPDATE addresses
+      SET smarty_match_status = 'uncertain', smarty_match_message = '旧结果不完整'
+      WHERE anytime_url = 'https://www.anytimemailbox.com/s/austin-14205-n-mopac-expy'
+    `)
+    .run();
+
+  const task = harness.taskService.createManualTask({ createdBy: 'Test Admin' });
+  await harness.pipeline.runTask(task.id);
+
+  assert.equal(smartyCalls.length, 1);
+  const address = harness.database.sqlite
+    .prepare(`
+      SELECT rdi, smarty_match_status AS smartyMatchStatus
+      FROM addresses
+      WHERE anytime_url = 'https://www.anytimemailbox.com/s/austin-14205-n-mopac-expy'
+    `)
+    .get() as { rdi: string; smartyMatchStatus: string };
+  assert.equal(address.rdi, 'Commercial');
+  assert.equal(address.smartyMatchStatus, 'verified');
+});
+
 test('sends only addresses without a successful Smarty cache to the batch client', async () => {
   const smartyCalls: SmartyLookupInput[][] = [];
   const harness = buildHarness([
@@ -1224,6 +1287,83 @@ test('keeps Smarty failures in staging and does not write Unknown addresses to t
   assert.equal(staged.importedAddressId, null);
 });
 
+test('refreshes every active address through Smarty without reusing its cached result', async () => {
+  const smartyCalls: SmartyLookupInput[][] = [];
+  const harness = buildHarness([], {
+    async lookupAddresses(_credentials, inputs) {
+      smartyCalls.push(inputs);
+      return inputs.map((input) => ({
+        inputId: input.inputId,
+        rdi: 'Commercial',
+        cmra: 'No',
+        raw: {
+          input_id: input.inputId,
+          candidate_index: 0,
+          delivery_line_1: '14205 N Mo Pac Expy Fl 5',
+          components: {
+            secondary_designator: 'Fl',
+            secondary_number: '5',
+          },
+          metadata: { rdi: 'Commercial' },
+          analysis: { dpv_match_code: 'Y', dpv_cmra: 'N' },
+        },
+      }));
+    },
+  });
+
+  insertAddress(harness.database, {
+    name: 'Austin - Mopac Expy',
+    slug: 'austin-mopac-expy',
+    anytimeUrl: 'https://www.anytimemailbox.com/s/austin-14205-n-mopac-expy',
+    streetAddress: '14205 N Mopac Expy 5th Floor',
+    city: 'Austin',
+    state: 'TX',
+    postalCode: '78728',
+    priceCents: 1999,
+    rdi: 'Residential',
+    cmra: 'No',
+    smartyCheckedAt: '2026-08-08T00:00:00.000Z',
+    smartyRaw: '{"cached":true}',
+  });
+
+  const task = harness.taskService.createSmartyRefreshAllTask({ createdBy: 'Test Admin' });
+  assert.ok(task);
+  await harness.pipeline.runTask(task.id);
+
+  assert.equal(smartyCalls.length, 1);
+  assert.deepEqual(smartyCalls[0]?.map((input) => input.streetAddress), ['14205 N Mopac Expy 5th Floor']);
+
+  const address = harness.database.sqlite
+    .prepare(`
+      SELECT rdi, cmra,
+             smarty_match_status AS smartyMatchStatus,
+             smarty_match_message AS smartyMatchMessage
+      FROM addresses
+      WHERE anytime_url = 'https://www.anytimemailbox.com/s/austin-14205-n-mopac-expy'
+    `)
+    .get() as {
+      rdi: string;
+      cmra: string;
+      smartyMatchStatus: string;
+      smartyMatchMessage: string | null;
+    };
+  assert.equal(address.rdi, 'Commercial');
+  assert.equal(address.cmra, 'No');
+  assert.equal(address.smartyMatchStatus, 'verified');
+  assert.equal(address.smartyMatchMessage, null);
+
+  const staged = harness.database.sqlite
+    .prepare(`
+      SELECT imported_address_id AS importedAddressId, crawl_status AS crawlStatus
+      FROM crawl_discovered_addresses
+      WHERE task_id = ?
+    `)
+    .get(task.id) as { importedAddressId: number; crawlStatus: string };
+  assert.ok(staged.importedAddressId > 0);
+  assert.equal(staged.crawlStatus, 'imported');
+  assertTaskCompleted(harness.database, task.id);
+});
+
 test('rotates Smarty credential batches across the enabled pool', async () => {
   const authIds: string[] = [];
   const addresses = Array.from({ length: 201 }, (_, index) => crawledAddress({
@@ -1340,11 +1480,22 @@ test('formats Smarty lookup payload with secondary address data and more candida
 
     return {
       status: 200,
-      data: capturedPayload.map((item) => ({
-        input_id: item.input_id,
-        metadata: { rdi: 'Commercial' },
-        analysis: { dpv_cmra: 'Y' },
-      })),
+      data: capturedPayload.map((item) => (
+        item.input_id === 'ordinal-floor'
+          ? {
+              input_id: item.input_id,
+              candidate_index: 0,
+              delivery_line_1: '14205 N Mo Pac Expy',
+              metadata: { rdi: 'Residential', building_default_indicator: 'Y' },
+              analysis: { dpv_match_code: 'D', dpv_cmra: 'N' },
+            }
+          : {
+              input_id: item.input_id,
+              candidate_index: 0,
+              metadata: { rdi: 'Commercial' },
+              analysis: { dpv_match_code: 'Y', dpv_cmra: 'Y' },
+            }
+      )),
     };
   }) as typeof originalPost;
 
@@ -1367,16 +1518,69 @@ test('formats Smarty lookup payload with secondary address data and more candida
           state: 'WA',
           postalCode: '98258',
         },
+        {
+          inputId: 'ordinal-floor',
+          streetAddress: '14205 N Mopac Expy 5th Floor',
+          city: 'Austin',
+          state: 'TX',
+          postalCode: '78728',
+        },
       ],
     );
 
-    assert.equal(results.length, 2);
+    assert.equal(results.length, 3);
     assert.equal(capturedPayload[0]?.street, '6140 Hwy 6');
     assert.equal(capturedPayload[0]?.secondary, undefined);
     assert.equal(capturedPayload[0]?.candidates, 10);
     assert.equal(capturedPayload[1]?.street, '731 WA 9');
     assert.equal(capturedPayload[1]?.secondary, 'Ste 101');
     assert.equal(capturedPayload[1]?.candidates, 10);
+    assert.equal(capturedPayload[2]?.street, '14205 N Mopac Expy');
+    assert.equal(capturedPayload[2]?.secondary, 'Fl 5');
+    assert.equal(results[2]?.rdi, 'Residential');
+    assert.equal(results[2]?.matchStatus, 'uncertain');
+    assert.match(results[2]?.matchMessage ?? '', /楼层|默认地址|不完整/);
+  } finally {
+    axiosWithPost.post = originalPost;
+  }
+});
+
+test('uses the first Smarty candidate instead of overwriting it with a later candidate', async () => {
+  const axiosWithPost = axios as unknown as { post: typeof axios.post };
+  const originalPost = axiosWithPost.post;
+
+  axiosWithPost.post = (async () => ({
+    status: 200,
+    data: [
+      {
+        input_id: 'ambiguous',
+        candidate_index: 0,
+        metadata: { rdi: 'Commercial' },
+        analysis: { dpv_match_code: 'Y', dpv_cmra: 'N' },
+      },
+      {
+        input_id: 'ambiguous',
+        candidate_index: 1,
+        metadata: { rdi: 'Residential' },
+        analysis: { dpv_match_code: 'Y', dpv_cmra: 'N' },
+      },
+    ],
+  })) as typeof originalPost;
+
+  try {
+    const client = new HttpSmartyLookupClient();
+    const [result] = await client.lookupAddresses(
+      { authId: 'auth-id', authToken: 'auth-token' },
+      [{
+        inputId: 'ambiguous',
+        streetAddress: '100 Main St',
+        city: 'Austin',
+        state: 'TX',
+        postalCode: '78701',
+      }],
+    );
+
+    assert.equal(result?.rdi, 'Commercial');
   } finally {
     axiosWithPost.post = originalPost;
   }

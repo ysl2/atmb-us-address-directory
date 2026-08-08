@@ -99,6 +99,9 @@ export function ensureDatabaseSchema(sqlite: Database.Database) {
       cmra TEXT NOT NULL CHECK (cmra IN ('Yes', 'No')),
       smarty_raw TEXT,
       smarty_checked_at TEXT,
+      smarty_match_status TEXT NOT NULL DEFAULT 'verified'
+        CHECK (smarty_match_status IN ('verified', 'uncertain')),
+      smarty_match_message TEXT,
       mailbox_min INTEGER,
       mailbox_max INTEGER,
       mailbox_count INTEGER,
@@ -228,6 +231,9 @@ export function ensureDatabaseSchema(sqlite: Database.Database) {
       cmra TEXT CHECK (cmra IS NULL OR cmra IN ('Yes', 'No')),
       smarty_raw TEXT,
       smarty_checked_at TEXT,
+      smarty_match_status TEXT
+        CHECK (smarty_match_status IS NULL OR smarty_match_status IN ('verified', 'uncertain')),
+      smarty_match_message TEXT,
       smarty_error TEXT,
       smarty_source_address_id INTEGER REFERENCES addresses(id) ON DELETE SET NULL,
       crawl_status TEXT NOT NULL DEFAULT 'discovered'

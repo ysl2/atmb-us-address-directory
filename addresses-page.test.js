@@ -115,6 +115,8 @@ test('public address price range query includes both boundaries and supports one
         price_cents INTEGER NOT NULL,
         rdi TEXT,
         cmra TEXT,
+        smarty_match_status TEXT NOT NULL DEFAULT 'verified',
+        smarty_match_message TEXT,
         mailbox_min INTEGER,
         mailbox_max INTEGER,
         updated_at TEXT NOT NULL,

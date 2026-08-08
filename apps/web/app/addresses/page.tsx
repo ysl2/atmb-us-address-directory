@@ -305,6 +305,11 @@ export default async function AddressesPage({ searchParams }: AddressesPageProps
                     <div className="addresses-main">
                       <h3><a href={address.detailUrl} rel="noreferrer" target="_blank">{address.name}</a></h3>
                       <p>{address.streetAddress}<br />{address.cityLine}</p>
+                      {address.smartyMatchStatus === 'uncertain' ? (
+                        <span className="addresses-match-warning" title={address.smartyMatchMessage ?? undefined}>
+                          Smarty 匹配不完整
+                        </span>
+                      ) : null}
                     </div>
                     <div className="addresses-data-cell"><strong>{address.stateLabel}</strong>州/地区</div>
                     <div className="addresses-data-cell">

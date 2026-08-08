@@ -4,7 +4,7 @@ import { execFile } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import type { AddressCmra, AddressRdi, AdminSubtaskType } from '@atmb/shared';
+import type { AddressCmra, AddressRdi, AdminSubtaskType, SmartyMatchStatus } from '@atmb/shared';
 
 import {
   proxyUrlToAxiosRequestOptions,
@@ -73,6 +73,8 @@ export interface SmartyLookupResult {
   inputId: string;
   rdi?: AddressRdi;
   cmra?: AddressCmra;
+  matchStatus?: SmartyMatchStatus;
+  matchMessage?: string | null;
   raw?: unknown;
   error?: string;
 }
@@ -152,6 +154,8 @@ interface StageRow {
   cmra: AddressCmra | null;
   smartyRaw: string | null;
   smartyCheckedAt: string | null;
+  smartyMatchStatus: SmartyMatchStatus | null;
+  smartyMatchMessage: string | null;
   smartyError: string | null;
   smartySourceAddressId: number | null;
   importedAddressId: number | null;
@@ -170,6 +174,8 @@ interface AddressCacheRow {
   cmra: AddressCmra;
   smartyRaw: string | null;
   smartyCheckedAt: string;
+  smartyMatchStatus: SmartyMatchStatus;
+  smartyMatchMessage: string | null;
   isActive: number;
 }
 
@@ -807,7 +813,7 @@ export class CrawlPipeline {
         continue;
       }
 
-      const cached = this.findSuccessfulSmartyCache(row);
+      const cached = row.importedAddressId ? null : this.findSuccessfulSmartyCache(row);
       if (cached) {
         const enriched = this.applyCachedSmarty(row, cached);
         this.upsertAddressFromStage(enriched);
@@ -877,19 +883,21 @@ export class CrawlPipeline {
         if (!stage) continue;
 
         if (!result) {
-          this.markStageSmartyFailed(stage.id, 'Smarty did not return this address result');
+          this.markStageSmartyFailed(stage, 'Smarty did not return this address result');
           continue;
         }
 
-        const mapped = normalizeSmartyResult(result);
+        const mapped = normalizeSmartyResult(result, stage.streetAddress);
         if (!mapped.rdi || !mapped.cmra) {
-          this.markStageSmartyFailed(stage.id, result.error || 'Smarty result missing valid RDI/CMRA');
+          this.markStageSmartyFailed(stage, result.error || 'Smarty result missing valid RDI/CMRA');
           continue;
         }
 
         const enriched = this.applySmartyResult(stage, {
           rdi: mapped.rdi,
           cmra: mapped.cmra,
+          matchStatus: mapped.matchStatus,
+          matchMessage: mapped.matchMessage,
           raw: mapped.raw,
         });
         this.upsertAddressFromStage(enriched);
@@ -930,6 +938,8 @@ export class CrawlPipeline {
           cmra,
           smarty_raw AS smartyRaw,
           smarty_checked_at AS smartyCheckedAt,
+          smarty_match_status AS smartyMatchStatus,
+          smarty_match_message AS smartyMatchMessage,
           smarty_error AS smartyError,
           smarty_source_address_id AS smartySourceAddressId,
           imported_address_id AS importedAddressId
@@ -957,12 +967,15 @@ export class CrawlPipeline {
           cmra,
           smarty_raw AS smartyRaw,
           smarty_checked_at AS smartyCheckedAt,
+          smarty_match_status AS smartyMatchStatus,
+          smarty_match_message AS smartyMatchMessage,
           is_active AS isActive
         FROM addresses
         WHERE anytime_url = ?
           AND smarty_checked_at IS NOT NULL
           AND rdi IN ('Residential', 'Commercial')
           AND cmra IN ('Yes', 'No')
+          AND smarty_match_status = 'verified'
         LIMIT 1
       `)
       .get(row.anytimeUrl) as AddressCacheRow | undefined;
@@ -986,6 +999,8 @@ export class CrawlPipeline {
           cmra,
           smarty_raw AS smartyRaw,
           smarty_checked_at AS smartyCheckedAt,
+          smarty_match_status AS smartyMatchStatus,
+          smarty_match_message AS smartyMatchMessage,
           is_active AS isActive
         FROM addresses
         WHERE state = @state
@@ -993,6 +1008,7 @@ export class CrawlPipeline {
           AND smarty_checked_at IS NOT NULL
           AND rdi IN ('Residential', 'Commercial')
           AND cmra IN ('Yes', 'No')
+          AND smarty_match_status = 'verified'
       `)
       .all({
         state: row.state,
@@ -1015,6 +1031,8 @@ export class CrawlPipeline {
       cmra: cached.cmra,
       smartyRaw: cached.smartyRaw,
       smartyCheckedAt: cached.smartyCheckedAt,
+      smartyMatchStatus: cached.smartyMatchStatus,
+      smartyMatchMessage: cached.smartyMatchMessage,
       smartySourceAddressId: cached.id,
     };
 
@@ -1026,6 +1044,8 @@ export class CrawlPipeline {
           cmra = @cmra,
           smarty_raw = @smartyRaw,
           smarty_checked_at = @smartyCheckedAt,
+          smarty_match_status = @smartyMatchStatus,
+          smarty_match_message = @smartyMatchMessage,
           smarty_error = NULL,
           smarty_source_address_id = @smartySourceAddressId,
           crawl_status = 'smarty_reused',
@@ -1038,6 +1058,8 @@ export class CrawlPipeline {
         cmra: enriched.cmra,
         smartyRaw: enriched.smartyRaw,
         smartyCheckedAt: enriched.smartyCheckedAt,
+        smartyMatchStatus: enriched.smartyMatchStatus,
+        smartyMatchMessage: enriched.smartyMatchMessage,
         smartySourceAddressId: enriched.smartySourceAddressId,
         updatedAt: now,
       });
@@ -1045,7 +1067,11 @@ export class CrawlPipeline {
     return enriched;
   }
 
-  private applySmartyResult(row: StageRow, result: Required<Pick<SmartyLookupResult, 'rdi' | 'cmra'>> & Pick<SmartyLookupResult, 'raw'>) {
+  private applySmartyResult(
+    row: StageRow,
+    result: Required<Pick<SmartyLookupResult, 'rdi' | 'cmra' | 'matchStatus'>>
+      & Pick<SmartyLookupResult, 'raw' | 'matchMessage'>,
+  ) {
     const now = new Date().toISOString();
     const enriched: StageRow = {
       ...row,
@@ -1053,6 +1079,8 @@ export class CrawlPipeline {
       cmra: result.cmra,
       smartyRaw: JSON.stringify(result.raw ?? {}),
       smartyCheckedAt: now,
+      smartyMatchStatus: result.matchStatus,
+      smartyMatchMessage: result.matchMessage ?? null,
       smartyError: null,
     };
 
@@ -1064,6 +1092,8 @@ export class CrawlPipeline {
           cmra = @cmra,
           smarty_raw = @smartyRaw,
           smarty_checked_at = @smartyCheckedAt,
+          smarty_match_status = @smartyMatchStatus,
+          smarty_match_message = @smartyMatchMessage,
           smarty_error = NULL,
           crawl_status = 'imported',
           updated_at = @updatedAt
@@ -1075,6 +1105,8 @@ export class CrawlPipeline {
         cmra: enriched.cmra,
         smartyRaw: enriched.smartyRaw,
         smartyCheckedAt: enriched.smartyCheckedAt,
+        smartyMatchStatus: enriched.smartyMatchStatus,
+        smartyMatchMessage: enriched.smartyMatchMessage,
         updatedAt: now,
       });
 
@@ -1091,14 +1123,33 @@ export class CrawlPipeline {
       .run(new Date().toISOString(), id);
   }
 
-  private markStageSmartyFailed(id: number, error: string) {
+  private markStageSmartyFailed(row: StageRow, error: string) {
+    const now = new Date().toISOString();
     this.options.database.sqlite
       .prepare(`
         UPDATE crawl_discovered_addresses
-        SET crawl_status = 'smarty_failed', smarty_error = ?, updated_at = ?
-        WHERE id = ?
+        SET
+          crawl_status = 'smarty_failed',
+          smarty_match_status = 'uncertain',
+          smarty_match_message = @message,
+          smarty_error = @message,
+          updated_at = @updatedAt
+        WHERE id = @id
       `)
-      .run(error, new Date().toISOString(), id);
+      .run({ id: row.id, message: error, updatedAt: now });
+
+    if (row.importedAddressId) {
+      this.options.database.sqlite
+        .prepare(`
+          UPDATE addresses
+          SET
+            smarty_match_status = 'uncertain',
+            smarty_match_message = @message,
+            updated_at = @updatedAt
+          WHERE id = @id
+        `)
+        .run({ id: row.importedAddressId, message: `本次 Smarty 验证失败，保留旧结果：${error}`, updatedAt: now });
+    }
   }
 
   private upsertAddressFromStage(row: StageRow) {
@@ -1107,9 +1158,11 @@ export class CrawlPipeline {
     }
 
     const now = new Date().toISOString();
-    const target = row.smartySourceAddressId
-      ? this.getAddressById(row.smartySourceAddressId)
-      : this.getAddressByAnytimeUrl(row.anytimeUrl);
+    const target = row.importedAddressId
+      ? this.getAddressById(row.importedAddressId)
+      : row.smartySourceAddressId
+        ? this.getAddressById(row.smartySourceAddressId)
+        : this.getAddressByAnytimeUrl(row.anytimeUrl);
 
     if (target) {
       this.options.database.sqlite
@@ -1136,6 +1189,8 @@ export class CrawlPipeline {
             cmra = @cmra,
             smarty_raw = @smartyRaw,
             smarty_checked_at = @smartyCheckedAt,
+            smarty_match_status = @smartyMatchStatus,
+            smarty_match_message = @smartyMatchMessage,
             mailbox_min = @mailboxMin,
             mailbox_max = @mailboxMax,
             mailbox_count = @mailboxCount,
@@ -1169,6 +1224,7 @@ export class CrawlPipeline {
           source, source_id, name, slug, anytime_url, signup_url, google_maps_url,
           country, state, state_name, city, street_address, postal_code, full_address,
           price_cents, price_currency, price_period, rdi, cmra, smarty_raw, smarty_checked_at,
+          smarty_match_status, smarty_match_message,
           mailbox_min, mailbox_max, mailbox_count, mailbox_numbers_json,
           is_featured, is_active, is_visible, status_note, last_crawled_at, first_seen_at,
           removed_at, created_at, updated_at
@@ -1176,6 +1232,7 @@ export class CrawlPipeline {
           'anytimemailbox', @sourceId, @name, @slug, @anytimeUrl, @signupUrl, NULL,
           @country, @state, @stateName, @city, @streetAddress, @postalCode, @fullAddress,
           @priceCents, @priceCurrency, @pricePeriod, @rdi, @cmra, @smartyRaw, @smartyCheckedAt,
+          @smartyMatchStatus, @smartyMatchMessage,
           @mailboxMin, @mailboxMax, @mailboxCount, @mailboxNumbersJson,
           0, 1, 1, NULL, @now, @now,
           NULL, @now, @now
@@ -1209,6 +1266,8 @@ export class CrawlPipeline {
           cmra,
           smarty_raw AS smartyRaw,
           smarty_checked_at AS smartyCheckedAt,
+          smarty_match_status AS smartyMatchStatus,
+          smarty_match_message AS smartyMatchMessage,
           is_active AS isActive
         FROM addresses
         WHERE id = ?
@@ -1232,6 +1291,8 @@ export class CrawlPipeline {
           cmra,
           smarty_raw AS smartyRaw,
           smarty_checked_at AS smartyCheckedAt,
+          smarty_match_status AS smartyMatchStatus,
+          smarty_match_message AS smartyMatchMessage,
           is_active AS isActive
         FROM addresses
         WHERE anytime_url = ?
@@ -1526,7 +1587,11 @@ export class HttpSmartyLookupClient implements SmartyLookupClient {
     const byInputId = new Map<string, unknown>();
     for (const candidate of candidates) {
       if (candidate && typeof candidate === 'object' && 'input_id' in candidate) {
-        byInputId.set(String((candidate as { input_id: unknown }).input_id), candidate);
+        const inputId = String((candidate as { input_id: unknown }).input_id);
+        const current = byInputId.get(inputId);
+        if (!current || smartyCandidateIndex(candidate) < smartyCandidateIndex(current)) {
+          byInputId.set(inputId, candidate);
+        }
       }
     }
 
@@ -1540,11 +1605,14 @@ export class HttpSmartyLookupClient implements SmartyLookupClient {
       }
 
       const mapped = normalizeSmartyRaw(raw);
+      const quality = classifySmartyMatch(input.streetAddress, raw);
       return mapped.rdi && mapped.cmra
         ? {
             inputId: input.inputId,
             rdi: mapped.rdi,
             cmra: mapped.cmra,
+            matchStatus: quality.status,
+            matchMessage: quality.message,
             raw,
           }
         : {
@@ -1558,6 +1626,15 @@ export class HttpSmartyLookupClient implements SmartyLookupClient {
 
 function formatSmartyStreet(streetAddress: string) {
   const cleaned = streetAddress.replace(/\s+/g, ' ').trim();
+  const ordinalFloorMatch = cleaned.match(/^(.*)\s+(\d+)(?:st|nd|rd|th)\s+(floor|fl)\.?$/i);
+
+  if (ordinalFloorMatch?.[1] && ordinalFloorMatch[2]) {
+    return {
+      street: ordinalFloorMatch[1].trim(),
+      secondary: `Fl ${ordinalFloorMatch[2]}`,
+    };
+  }
+
   const secondaryMatch = cleaned.match(/^(.*)\s+(suite|ste\.?|unit|apt\.?|apartment|room|rm|floor|fl|#)\s+([A-Za-z0-9][A-Za-z0-9-]*)$/i);
 
   if (secondaryMatch?.[1] && secondaryMatch[2] && secondaryMatch[3]) {
@@ -1584,14 +1661,90 @@ function normalizeSecondaryDesignator(value: string) {
   return 'Ste';
 }
 
-function normalizeSmartyResult(result: SmartyLookupResult) {
+function normalizeSmartyResult(result: SmartyLookupResult, streetAddress: string) {
   const rawMapped = result.raw ? normalizeSmartyRaw(result.raw) : {};
+  const quality = result.matchStatus
+    ? { status: result.matchStatus, message: result.matchMessage ?? null }
+    : classifySmartyMatch(streetAddress, result.raw);
 
   return {
     rdi: normalizeRdi(result.rdi) ?? rawMapped.rdi,
     cmra: normalizeCmra(result.cmra) ?? rawMapped.cmra,
+    matchStatus: quality.status,
+    matchMessage: quality.message,
     raw: result.raw,
   };
+}
+
+function classifySmartyMatch(streetAddress: string, raw: unknown): {
+  status: SmartyMatchStatus;
+  message: string | null;
+} {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      status: 'uncertain',
+      message: 'Smarty 未提供完整的地址匹配详情',
+    };
+  }
+
+  const record = raw as {
+    delivery_line_1?: unknown;
+    components?: {
+      secondary_designator?: unknown;
+      secondary_number?: unknown;
+    };
+    metadata?: { building_default_indicator?: unknown };
+    analysis?: { dpv_match_code?: unknown };
+  };
+  const issues: string[] = [];
+  const matchCode = typeof record.analysis?.dpv_match_code === 'string'
+    ? record.analysis.dpv_match_code.toUpperCase()
+    : '';
+
+  if (matchCode === 'D') {
+    issues.push('Smarty 只匹配到主地址，楼层或套房信息不完整');
+  } else if (matchCode === 'S') {
+    issues.push('Smarty 无法确认楼层或套房编号');
+  } else if (matchCode !== 'Y') {
+    issues.push('Smarty 未返回完整的 DPV 匹配结果');
+  }
+
+  if (record.metadata?.building_default_indicator === 'Y') {
+    issues.push('Smarty 返回的是楼栋默认地址');
+  }
+
+  const expectedSecondary = formatSmartyStreet(streetAddress).secondary;
+  if (expectedSecondary && !smartyRawHasSecondary(record, expectedSecondary)) {
+    issues.push('Smarty 返回结果未保留楼层或套房信息');
+  }
+
+  const uniqueIssues = [...new Set(issues)];
+  return uniqueIssues.length > 0
+    ? { status: 'uncertain', message: uniqueIssues.join('；') }
+    : { status: 'verified', message: null };
+}
+
+function smartyRawHasSecondary(
+  record: {
+    delivery_line_1?: unknown;
+    components?: { secondary_designator?: unknown; secondary_number?: unknown };
+  },
+  expectedSecondary: string,
+) {
+  const secondaryNumber = record.components?.secondary_number;
+  if (typeof secondaryNumber === 'string' && secondaryNumber.trim()) return true;
+
+  const deliveryLine = typeof record.delivery_line_1 === 'string'
+    ? record.delivery_line_1.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+    : '';
+  const normalizedSecondary = expectedSecondary.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return Boolean(deliveryLine && normalizedSecondary && deliveryLine.includes(normalizedSecondary));
+}
+
+function smartyCandidateIndex(candidate: unknown) {
+  if (!candidate || typeof candidate !== 'object') return Number.MAX_SAFE_INTEGER;
+  const value = Number((candidate as { candidate_index?: unknown }).candidate_index);
+  return Number.isInteger(value) && value >= 0 ? value : Number.MAX_SAFE_INTEGER;
 }
 
 function normalizeSmartyRaw(raw: unknown) {
@@ -1680,6 +1833,8 @@ function addressSqlValues(row: StageRow) {
     cmra: row.cmra,
     smartyRaw: row.smartyRaw,
     smartyCheckedAt: row.smartyCheckedAt,
+    smartyMatchStatus: row.smartyMatchStatus ?? 'uncertain',
+    smartyMatchMessage: row.smartyMatchMessage,
     mailboxMin: row.mailboxMin,
     mailboxMax: row.mailboxMax,
     mailboxCount: row.mailboxCount,

@@ -207,6 +207,28 @@ test('rejects invalid admin address price ranges', async (t) => {
   assert.equal(reversedRangeResponse.json().message, '最低价格不能高于最高价格');
 });
 
+test('creates one full Smarty refresh task and rejects concurrent refreshes', async (t) => {
+  const { app } = await buildTestServer();
+  t.after(() => app.close());
+  const cookie = await loginCookie(app);
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/admin/addresses/smarty-refresh-all-task',
+    headers: { cookie },
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(response.json().item.note, '全量重新验证 6 个地址的 RDI/CMRA');
+
+  const concurrentResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/addresses/smarty-refresh-all-task',
+    headers: { cookie },
+  });
+  assert.equal(concurrentResponse.statusCode, 409);
+});
+
 test('lists discovered addresses that do not have RDI and CMRA yet', async (t) => {
   const databaseUrl = join(process.cwd(), `.address-discovered-${Date.now()}.sqlite`);
   rmSync(databaseUrl, { force: true });

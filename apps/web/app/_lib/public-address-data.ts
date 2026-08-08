@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { getUsStateDisplay } from '@atmb/shared';
+import { getUsStateDisplay, type SmartyMatchStatus } from '@atmb/shared';
 
 export { buildAddressDetailRedirectUrl } from './referral-redirect';
 import { buildAddressDetailRedirectUrl } from './referral-redirect';
@@ -27,6 +27,8 @@ export interface PublicAddressListItem {
   price: string;
   rdi: string;
   cmra: string;
+  smartyMatchStatus: SmartyMatchStatus;
+  smartyMatchMessage: string | null;
   mailbox: string;
   detailUrl: string;
   mapsUrl: string;
@@ -73,6 +75,8 @@ interface AddressRow {
   priceCents: number;
   rdi: string | null;
   cmra: string | null;
+  smartyMatchStatus: SmartyMatchStatus;
+  smartyMatchMessage: string | null;
   mailboxMin: number | null;
   mailboxMax: number | null;
   updatedAt: string;
@@ -145,6 +149,8 @@ export async function getPublicAddressesPageData(filters: PublicAddressFilters):
           a.price_cents AS priceCents,
           a.rdi,
           a.cmra,
+          a.smarty_match_status AS smartyMatchStatus,
+          a.smarty_match_message AS smartyMatchMessage,
           a.mailbox_min AS mailboxMin,
           a.mailbox_max AS mailboxMax,
           a.updated_at AS updatedAt
@@ -358,6 +364,8 @@ function toPublicAddressListItem(row: AddressRow) {
     price: formatPublicPrice(row.priceCents),
     rdi: row.rdi ?? '无',
     cmra: row.cmra ?? '无',
+    smartyMatchStatus: row.smartyMatchStatus,
+    smartyMatchMessage: row.smartyMatchMessage,
     mailbox: formatPublicMailboxRange(row.mailboxMin, row.mailboxMax),
     detailUrl: buildAddressDetailRedirectUrl(row.anytimeUrl),
     mapsUrl: buildPublicGoogleMapsUrl(fullAddress),

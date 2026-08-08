@@ -100,6 +100,8 @@ const deletableTaskStatuses: AdminTaskStatus[] = ['completed', 'stopped'];
 const smartyCandidateWhereSql = `
   stage.task_id = ?
   AND (
+    stage.imported_address_id IS NOT NULL
+    OR
     (
       stage.rdi IN ('Residential', 'Commercial')
       AND stage.cmra IN ('Yes', 'No')
@@ -115,6 +117,7 @@ const smartyCandidateWhereSql = `
           AND cached.smarty_checked_at IS NOT NULL
           AND cached.rdi IN ('Residential', 'Commercial')
           AND cached.cmra IN ('Yes', 'No')
+          AND cached.smarty_match_status = 'verified'
       )
       AND NOT EXISTS (
         SELECT 1
@@ -123,6 +126,7 @@ const smartyCandidateWhereSql = `
           AND cached.smarty_checked_at IS NOT NULL
           AND cached.rdi IN ('Residential', 'Commercial')
           AND cached.cmra IN ('Yes', 'No')
+          AND cached.smarty_match_status = 'verified'
       )
     )
   )
@@ -321,6 +325,54 @@ export class TaskService {
       createdBy: input.createdBy || 'system',
       createdType: 'system',
     });
+  }
+
+  createSmartyRefreshAllTask(input: CreateManualTaskInput): AdminTaskListItem | null {
+    const addressCount = scalar(
+      this.database,
+      "SELECT COUNT(*) AS count FROM addresses WHERE source = 'anytimemailbox' AND is_active = 1",
+    );
+    if (addressCount === 0) return null;
+
+    const task = this.createTask({
+      createdBy: input.createdBy,
+      createdType: 'manual',
+      note: input.note ?? `全量重新验证 ${addressCount} 个地址的 RDI/CMRA`,
+      taskTypes: smartySyncTaskTypes,
+    });
+    const now = new Date().toISOString();
+
+    this.database.sqlite
+      .prepare(`
+        INSERT INTO crawl_discovered_addresses (
+          task_id, source, source_id, state_name, state, state_url, state_location_count,
+          name, slug, anytime_url, signup_url, myear_url, country, city, street_address,
+          postal_code, full_address, normalized_address_key, price_cents, price_currency,
+          price_period, mailbox_min, mailbox_max, mailbox_count, mailbox_numbers_json,
+          rdi, cmra, smarty_raw, smarty_checked_at, smarty_match_status, smarty_match_message,
+          smarty_error, smarty_source_address_id, crawl_status, error_message,
+          imported_address_id, created_at, updated_at
+        )
+        SELECT
+          @taskId, a.source, a.source_id, a.state_name, a.state,
+          COALESCE(s.anytime_url, 'https://www.anytimemailbox.com/l/usa'), NULL,
+          a.name, a.slug, a.anytime_url, a.signup_url, a.signup_url,
+          a.country, a.city, a.street_address, a.postal_code, a.full_address,
+          LOWER(a.street_address || '|' || a.city || '|' || a.state || '|' || a.postal_code),
+          a.price_cents, a.price_currency, a.price_period,
+          a.mailbox_min, a.mailbox_max, a.mailbox_count, a.mailbox_numbers_json,
+          NULL, NULL, NULL, NULL, NULL, NULL,
+          NULL, NULL, 'mailbox_fetched', NULL,
+          a.id, @now, @now
+        FROM addresses a
+        LEFT JOIN states s ON s.code = a.state
+        WHERE a.source = 'anytimemailbox'
+          AND a.is_active = 1
+        ORDER BY a.id ASC
+      `)
+      .run({ taskId: task.id, now });
+
+    return this.getTask(task.id);
   }
 
   createMailboxUpdateTask(input: CreateManualTaskInput & { addressIds?: number[]; stageIds?: number[] }): AdminTaskListItem | null {

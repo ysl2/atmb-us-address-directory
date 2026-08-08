@@ -255,6 +255,29 @@ export function registerAddressRoutes(
     return reply.code(201).send({ item });
   });
 
+  app.post('/api/admin/addresses/smarty-refresh-all-task', async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    if (!taskService) {
+      return reply.code(503).send({ message: '任务服务不可用' });
+    }
+
+    if (taskService.hasRunningTask()) {
+      return reply.code(409).send({ message: '已有任务正在执行，请等待完成后再全量验证 RDI/CMRA' });
+    }
+
+    const item = taskService.createSmartyRefreshAllTask({
+      createdBy: 'admin',
+    });
+
+    if (!item) {
+      return reply.code(404).send({ message: '没有可重新验证的地址' });
+    }
+
+    void taskExecutor?.enqueue(item.id);
+
+    return reply.code(201).send({ item });
+  });
+
   app.get('/go/get-us-residential-address', async (_request, reply) => {
     reply.setCookie('atmb_referral_visited', '1', {
       httpOnly: true,

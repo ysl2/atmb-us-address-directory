@@ -71,6 +71,8 @@ export const addresses = sqliteTable(
     cmra: text('cmra', { enum: ['Yes', 'No'] }).notNull(),
     smartyRaw: text('smarty_raw'),
     smartyCheckedAt: text('smarty_checked_at'),
+    smartyMatchStatus: text('smarty_match_status', { enum: ['verified', 'uncertain'] }).notNull().default('verified'),
+    smartyMatchMessage: text('smarty_match_message'),
     mailboxMin: integer('mailbox_min'),
     mailboxMax: integer('mailbox_max'),
     mailboxCount: integer('mailbox_count'),
@@ -100,6 +102,7 @@ export const addresses = sqliteTable(
     index('addresses_updated_at_idx').on(table.updatedAt),
     check('addresses_rdi_check', sql`${table.rdi} IN ('Residential', 'Commercial')`),
     check('addresses_cmra_check', sql`${table.cmra} IN ('Yes', 'No')`),
+    check('addresses_smarty_match_status_check', sql`${table.smartyMatchStatus} IN ('verified', 'uncertain')`),
   ],
 );
 
@@ -245,6 +248,8 @@ export const crawlDiscoveredAddresses = sqliteTable(
     cmra: text('cmra', { enum: ['Yes', 'No'] }),
     smartyRaw: text('smarty_raw'),
     smartyCheckedAt: text('smarty_checked_at'),
+    smartyMatchStatus: text('smarty_match_status', { enum: ['verified', 'uncertain'] }),
+    smartyMatchMessage: text('smarty_match_message'),
     smartyError: text('smarty_error'),
     smartySourceAddressId: integer('smarty_source_address_id').references(() => addresses.id, { onDelete: 'set null' }),
     crawlStatus: text('crawl_status', {
@@ -272,6 +277,7 @@ export const crawlDiscoveredAddresses = sqliteTable(
     index('crawl_discovered_imported_address_idx').on(table.importedAddressId),
     check('crawl_discovered_rdi_check', sql`${table.rdi} IS NULL OR ${table.rdi} IN ('Residential', 'Commercial')`),
     check('crawl_discovered_cmra_check', sql`${table.cmra} IS NULL OR ${table.cmra} IN ('Yes', 'No')`),
+    check('crawl_discovered_smarty_match_status_check', sql`${table.smartyMatchStatus} IS NULL OR ${table.smartyMatchStatus} IN ('verified', 'uncertain')`),
     check('crawl_discovered_status_check', sql`${table.crawlStatus} IN ('discovered', 'mailbox_fetched', 'smarty_reused', 'smarty_pending', 'smarty_failed', 'imported', 'skipped')`),
   ],
 );
