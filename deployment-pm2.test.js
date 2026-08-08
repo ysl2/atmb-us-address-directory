@@ -26,7 +26,7 @@ test('pm2 ecosystem defines one web process and one server process', () => {
   assert.equal(web.exec_mode, 'fork');
   assert.equal(web.instances, 1);
   assert.equal(web.env.NODE_ENV, 'production');
-  assert.equal(web.env.PORT, '3000');
+  assert.equal(web.env.PORT, '3002');
   assert.equal(web.env.DATABASE_URL, server.env.DATABASE_URL);
   assert.equal(web.env.API_BASE_URL, 'http://127.0.0.1:3001');
 });

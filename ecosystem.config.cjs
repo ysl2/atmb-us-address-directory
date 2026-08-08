@@ -44,7 +44,7 @@ module.exports = {
       max_memory_restart: '900M',
       env: {
         NODE_ENV: 'production',
-        PORT: process.env.WEB_PORT || '3000',
+        PORT: process.env.WEB_PORT || '3002',
         HOSTNAME: process.env.WEB_HOST || '127.0.0.1',
         DATABASE_URL: databaseUrl,
         NEXT_PUBLIC_API_BASE_URL: process.env.NEXT_PUBLIC_API_BASE_URL || publicOrigin,

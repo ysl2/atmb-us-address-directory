@@ -44,7 +44,7 @@ export function resolveServerConfig(
     databaseUrl: env.DATABASE_URL ?? defaultDatabaseUrl,
     nodeEnv,
     sessionSecret,
-    webOrigin: env.WEB_ORIGIN ?? 'http://localhost:3000',
+    webOrigin: env.WEB_ORIGIN ?? 'http://localhost:3002',
     addressImageUploadDir: env.ADDRESS_IMAGE_UPLOAD_DIR ?? fileURLToPath(
       new URL('../../../web/public/uploads/address-images', import.meta.url),
     ),

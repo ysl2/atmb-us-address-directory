@@ -87,8 +87,8 @@ npm run dev:web
 
 默认地址：
 
-- 前台：http://localhost:3000
-- 后台：http://localhost:3000/admin
+- 前台：http://localhost:3002
+- 后台：http://localhost:3002/admin
 - API：http://localhost:3001
 
 开发环境默认管理员账号可使用：
