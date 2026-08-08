@@ -268,6 +268,24 @@ export function ensureDatabaseSchema(sqlite: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS proxy_library_active_idx ON proxy_library (is_active);
     CREATE INDEX IF NOT EXISTS proxy_library_test_status_idx ON proxy_library (last_test_status);
+
+    CREATE TABLE IF NOT EXISTS smarty_credentials (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      auth_id TEXT NOT NULL UNIQUE,
+      auth_token_encrypted TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      last_status TEXT NOT NULL DEFAULT 'not_tested'
+        CHECK (last_status IN ('not_tested', 'success', 'failed')),
+      last_message TEXT,
+      last_checked_at TEXT,
+      last_used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS smarty_credentials_active_idx ON smarty_credentials (is_active);
+    CREATE INDEX IF NOT EXISTS smarty_credentials_status_idx ON smarty_credentials (last_status);
+
     CREATE TABLE IF NOT EXISTS system_settings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       smarty_auth_id TEXT NOT NULL DEFAULT '',
@@ -288,5 +306,30 @@ export function ensureDatabaseSchema(sqlite: Database.Database) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    INSERT OR IGNORE INTO smarty_credentials (
+      auth_id, auth_token_encrypted, is_active,
+      last_status, last_message, last_checked_at,
+      created_at, updated_at
+    )
+    SELECT
+      smarty_auth_id,
+      smarty_auth_token_encrypted,
+      1,
+      CASE smarty_connection_status
+        WHEN 'connected' THEN 'success'
+        WHEN 'failed' THEN 'failed'
+        ELSE 'not_tested'
+      END,
+      smarty_connection_message,
+      smarty_last_tested_at,
+      created_at,
+      updated_at
+    FROM system_settings
+    WHERE smarty_auth_id <> '' AND smarty_auth_token_encrypted IS NOT NULL;
+
+    UPDATE system_settings
+    SET smarty_auth_id = '', smarty_auth_token_encrypted = NULL
+    WHERE smarty_auth_id <> '' AND smarty_auth_token_encrypted IS NOT NULL;
   `);
 }

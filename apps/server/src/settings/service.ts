@@ -10,9 +10,10 @@ import { US_STATES } from '@atmb/shared';
 import type {
   AdminProxyListItem,
   AdminProxyTestStatus,
+  AdminSmartyCredential,
   AdminSystemSettings,
   HeadCodeCheckResponse,
-  SmartyConnectionStatus,
+  SmartyCredentialStatus,
   UpdateFrequencyDays,
   UpdateMinute,
 } from '@atmb/shared';
@@ -29,10 +30,12 @@ export interface SmartyClient {
 }
 
 export interface SaveSmartySettingsInput {
-  authId?: string;
-  authToken?: string;
-  remainingCredits?: number | null;
-  monthlyUsed?: number | null;
+  credentials: Array<{
+    id?: number;
+    authId: string;
+    authToken?: string;
+    isActive: boolean;
+  }>;
 }
 
 export interface ProxyTestResult {
@@ -64,6 +67,19 @@ interface ProxyRow {
   updatedAt: string;
 }
 
+interface SmartyCredentialRow {
+  id: number;
+  authId: string;
+  authTokenEncrypted: string;
+  isActive: number;
+  lastStatus: SmartyCredentialStatus;
+  lastMessage: string | null;
+  lastCheckedAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SaveUpdateScheduleInput {
   autoUpdateEnabled: boolean;
   updateFrequencyDays: UpdateFrequencyDays | null;
@@ -73,14 +89,6 @@ export interface SaveUpdateScheduleInput {
 
 interface SystemSettingsRow {
   id: number;
-  smartyAuthId: string;
-  smartyAuthTokenEncrypted: string | null;
-  smartyConnectionStatus: SmartyConnectionStatus;
-  smartyConnectionMessage: string | null;
-  smartyLastTestedAt: string | null;
-  smartyRemainingCredits: number | null;
-  smartyMonthlyUsed: number | null;
-  smartyCreditsUpdatedAt: string | null;
   autoUpdateEnabled: number;
   updateFrequencyDays: UpdateFrequencyDays | null;
   updateHour: number;
@@ -88,8 +96,6 @@ interface SystemSettingsRow {
   headCode: string;
   updatedAt: string;
 }
-
-const SETTINGS_ID = 1;
 
 export class HttpSmartyClient implements SmartyClient {
   async testConnection(credentials: { authId: string; authToken: string }) {
@@ -168,20 +174,17 @@ export class SettingsService {
   }
 
   getSettings(): AdminSystemSettings {
-    return toSafeSettings(this.getRow());
+    return toSafeSettings(this.getRow(), this.listSmartyCredentials());
   }
 
-  getSmartyCredentials() {
-    const current = this.getRow();
-
-    if (!current.smartyAuthId || !current.smartyAuthTokenEncrypted) {
-      return null;
-    }
-
-    return {
-      authId: current.smartyAuthId,
-      authToken: decryptSecret(current.smartyAuthTokenEncrypted, this.config.sessionSecret),
-    };
+  getSmartyCredentialsPool() {
+    return this.getSmartyCredentialRows()
+      .filter((credential) => Boolean(credential.isActive))
+      .map((credential) => ({
+        id: credential.id,
+        authId: credential.authId,
+        authToken: decryptSecret(credential.authTokenEncrypted, this.config.sessionSecret),
+      }));
   }
 
   getUpdateSchedule() {
@@ -196,70 +199,204 @@ export class SettingsService {
   }
 
   saveSmartySettings(input: SaveSmartySettingsInput) {
-    const current = this.getRow();
-    const now = new Date().toISOString();
-    const nextAuthId = input.authId === undefined ? current.smartyAuthId : input.authId.trim();
-    const nextEncryptedToken = input.authToken
-      ? encryptSecret(input.authToken, this.config.sessionSecret)
-      : current.smartyAuthTokenEncrypted;
-    const creditsTouched = input.remainingCredits !== undefined || input.monthlyUsed !== undefined;
-    const nextStatus = nextAuthId && nextEncryptedToken
-      ? current.smartyConnectionStatus
-      : 'not_configured';
+    const currentRows = this.getSmartyCredentialRows();
+    const currentById = new Map(currentRows.map((row) => [row.id, row]));
+    const authIds = input.credentials.map((credential) => credential.authId.trim());
+    if (new Set(authIds).size !== authIds.length) {
+      throw new Error('SMARTY_DUPLICATE_AUTH_ID');
+    }
+    const credentialIds = input.credentials
+      .map((credential) => credential.id)
+      .filter((id): id is number => id !== undefined);
+    if (new Set(credentialIds).size !== credentialIds.length) {
+      throw new Error('SMARTY_DUPLICATE_CREDENTIAL_ID');
+    }
 
-    this.database.sqlite
-      .prepare(`
-        UPDATE system_settings
-        SET
-          smarty_auth_id = @authId,
-          smarty_auth_token_encrypted = @token,
-          smarty_connection_status = @status,
-          smarty_remaining_credits = @remainingCredits,
-          smarty_monthly_used = @monthlyUsed,
-          smarty_credits_updated_at = @creditsUpdatedAt,
-          updated_at = @updatedAt
-        WHERE id = 1
-      `)
-      .run({
-        authId: nextAuthId,
-        token: nextEncryptedToken,
-        status: nextStatus,
-        remainingCredits: input.remainingCredits === undefined ? current.smartyRemainingCredits : input.remainingCredits,
-        monthlyUsed: input.monthlyUsed === undefined ? current.smartyMonthlyUsed : input.monthlyUsed,
-        creditsUpdatedAt: creditsTouched ? now : current.smartyCreditsUpdatedAt,
-        updatedAt: now,
-      });
+    const now = new Date().toISOString();
+    const save = this.database.sqlite.transaction(() => {
+      const keptIds = new Set<number>();
+
+      for (const current of currentRows) {
+        this.database.sqlite
+          .prepare('UPDATE smarty_credentials SET auth_id = ? WHERE id = ?')
+          .run(`__pending_smarty_${current.id}_${now}`, current.id);
+      }
+
+      for (const credential of input.credentials) {
+        const authId = credential.authId.trim();
+        const authToken = credential.authToken?.trim();
+
+        if (credential.id !== undefined) {
+          const current = currentById.get(credential.id);
+          if (!current) {
+            throw new Error('SMARTY_CREDENTIAL_NOT_FOUND');
+          }
+
+          const tokenChanged = Boolean(authToken);
+          const authIdChanged = authId !== current.authId;
+          this.database.sqlite
+            .prepare(`
+              UPDATE smarty_credentials
+              SET
+                auth_id = @authId,
+                auth_token_encrypted = @token,
+                is_active = @isActive,
+                last_status = @lastStatus,
+                last_message = @lastMessage,
+                last_checked_at = @lastCheckedAt,
+                updated_at = @updatedAt
+              WHERE id = @id
+            `)
+            .run({
+              id: current.id,
+              authId,
+              token: tokenChanged
+                ? encryptSecret(authToken!, this.config.sessionSecret)
+                : current.authTokenEncrypted,
+              isActive: credential.isActive ? 1 : 0,
+              lastStatus: tokenChanged || authIdChanged ? 'not_tested' : current.lastStatus,
+              lastMessage: tokenChanged || authIdChanged ? null : current.lastMessage,
+              lastCheckedAt: tokenChanged || authIdChanged ? null : current.lastCheckedAt,
+              updatedAt: now,
+            });
+          keptIds.add(current.id);
+          continue;
+        }
+
+        if (!authToken) {
+          throw new Error('SMARTY_TOKEN_REQUIRED');
+        }
+
+        const result = this.database.sqlite
+          .prepare(`
+            INSERT INTO smarty_credentials (
+              auth_id, auth_token_encrypted, is_active, created_at, updated_at
+            ) VALUES (@authId, @token, @isActive, @now, @now)
+          `)
+          .run({
+            authId,
+            token: encryptSecret(authToken, this.config.sessionSecret),
+            isActive: credential.isActive ? 1 : 0,
+            now,
+          });
+        keptIds.add(Number(result.lastInsertRowid));
+      }
+
+      for (const current of currentRows) {
+        if (!keptIds.has(current.id)) {
+          this.database.sqlite.prepare('DELETE FROM smarty_credentials WHERE id = ?').run(current.id);
+        }
+      }
+    });
+
+    save();
 
     return this.getSettings();
   }
 
-  async testSmartyConnection() {
-    const current = this.getRow();
-
-    if (!current.smartyAuthId || !current.smartyAuthTokenEncrypted) {
+  async testSmartyConnections() {
+    const credentials = this.getSmartyCredentialRows().filter((credential) => Boolean(credential.isActive));
+    if (credentials.length === 0) {
       throw new Error('SMARTY_NOT_CONFIGURED');
     }
 
-    const authToken = decryptSecret(current.smartyAuthTokenEncrypted, this.config.sessionSecret);
-    const result = await this.smartyClient.testConnection({
-      authId: current.smartyAuthId,
-      authToken,
-    });
-    const now = new Date().toISOString();
-
-    this.database.sqlite
-      .prepare(`
-        UPDATE system_settings
-        SET
-          smarty_connection_status = ?,
-          smarty_connection_message = ?,
-          smarty_last_tested_at = ?,
-          updated_at = ?
-        WHERE id = 1
-      `)
-      .run(result.ok ? 'connected' : 'failed', result.message ?? null, now, now);
+    for (const credential of credentials) {
+      await this.testSmartyCredentialRow(credential);
+    }
 
     return this.getSettings();
+  }
+
+  async testSmartyCredential(id: number) {
+    await this.testSmartyCredentialRow(this.getSmartyCredentialRow(id));
+
+    return this.getSettings();
+  }
+
+  markSmartyCredentialSuccess(id: number) {
+    const now = new Date().toISOString();
+    this.database.sqlite
+      .prepare(`
+        UPDATE smarty_credentials
+        SET last_status = 'success', last_message = NULL,
+            last_checked_at = @now, last_used_at = @now, updated_at = @now
+        WHERE id = @id
+      `)
+      .run({ id, now });
+  }
+
+  markSmartyCredentialFailure(id: number, message: string) {
+    const now = new Date().toISOString();
+    this.database.sqlite
+      .prepare(`
+        UPDATE smarty_credentials
+        SET last_status = 'failed', last_message = @message,
+            last_checked_at = @now, last_used_at = @now, updated_at = @now
+        WHERE id = @id
+      `)
+      .run({ id, message, now });
+  }
+
+  private async testSmartyCredentialRow(credential: SmartyCredentialRow) {
+    let result: { ok: boolean; message?: string };
+    try {
+      result = await this.smartyClient.testConnection({
+        authId: credential.authId,
+        authToken: decryptSecret(credential.authTokenEncrypted, this.config.sessionSecret),
+      });
+    } catch (error) {
+      result = {
+        ok: false,
+        message: error instanceof Error ? error.message : 'Smarty connection test failed',
+      };
+    }
+    const now = new Date().toISOString();
+    this.database.sqlite
+      .prepare(`
+        UPDATE smarty_credentials
+        SET last_status = @status, last_message = @message,
+            last_checked_at = @now, updated_at = @now
+        WHERE id = @id
+      `)
+      .run({
+        id: credential.id,
+        status: result.ok ? 'success' : 'failed',
+        message: result.message ?? null,
+        now,
+      });
+  }
+
+  private listSmartyCredentials() {
+    return this.getSmartyCredentialRows().map(toSafeSmartyCredential);
+  }
+
+  private getSmartyCredentialRows() {
+    return this.database.sqlite
+      .prepare(`
+        SELECT
+          id,
+          auth_id AS authId,
+          auth_token_encrypted AS authTokenEncrypted,
+          is_active AS isActive,
+          last_status AS lastStatus,
+          last_message AS lastMessage,
+          last_checked_at AS lastCheckedAt,
+          last_used_at AS lastUsedAt,
+          created_at AS createdAt,
+          updated_at AS updatedAt
+        FROM smarty_credentials
+        ORDER BY id ASC
+      `)
+      .all() as SmartyCredentialRow[];
+  }
+
+  private getSmartyCredentialRow(id: number) {
+    const row = this.getSmartyCredentialRows().find((credential) => credential.id === id);
+    if (!row) {
+      throw new Error('SMARTY_CREDENTIAL_NOT_FOUND');
+    }
+
+    return row;
   }
 
   saveUpdateSchedule(input: SaveUpdateScheduleInput) {
@@ -462,14 +599,6 @@ export class SettingsService {
       .prepare(`
         SELECT
           id,
-          smarty_auth_id AS smartyAuthId,
-          smarty_auth_token_encrypted AS smartyAuthTokenEncrypted,
-          smarty_connection_status AS smartyConnectionStatus,
-          smarty_connection_message AS smartyConnectionMessage,
-          smarty_last_tested_at AS smartyLastTestedAt,
-          smarty_remaining_credits AS smartyRemainingCredits,
-          smarty_monthly_used AS smartyMonthlyUsed,
-          smarty_credits_updated_at AS smartyCreditsUpdatedAt,
           auto_update_enabled AS autoUpdateEnabled,
           update_frequency_days AS updateFrequencyDays,
           update_hour AS updateHour,
@@ -503,18 +632,45 @@ function normalizeProxyNote(value: string | null | undefined) {
   return trimmed ? trimmed : null;
 }
 
-function toSafeSettings(row: SystemSettingsRow): AdminSystemSettings {
+function toSafeSmartyCredential(row: SmartyCredentialRow): AdminSmartyCredential {
+  return {
+    id: row.id,
+    authId: row.authId,
+    hasAuthToken: Boolean(row.authTokenEncrypted),
+    isActive: Boolean(row.isActive),
+    lastStatus: row.lastStatus,
+    lastMessage: row.lastMessage,
+    lastCheckedAt: row.lastCheckedAt,
+    lastUsedAt: row.lastUsedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function toSafeSettings(row: SystemSettingsRow, smartyCredentials: AdminSmartyCredential[]): AdminSystemSettings {
   const autoUpdateEnabled = Boolean(row.autoUpdateEnabled);
+  const activeCredentials = smartyCredentials.filter((credential) => credential.isActive);
+  const successfulCredentials = activeCredentials.filter((credential) => credential.lastStatus === 'success');
+  const failedCredentials = activeCredentials.filter((credential) => credential.lastStatus === 'failed');
+  const smartyConnectionStatus = activeCredentials.length === 0
+    ? 'not_configured'
+    : successfulCredentials.length > 0
+      ? 'connected'
+      : failedCredentials.length === activeCredentials.length
+        ? 'failed'
+        : 'not_configured';
+  const smartyConnectionMessage = activeCredentials.length === 0
+    ? '尚未配置启用的 Smarty 账号'
+    : successfulCredentials.length > 0
+      ? `${successfulCredentials.length}/${activeCredentials.length} 个启用账号可用`
+      : failedCredentials.length === activeCredentials.length
+        ? `${failedCredentials.length} 个启用账号均不可用`
+        : `${activeCredentials.length - failedCredentials.length} 个启用账号尚未测试`;
 
   return {
-    smartyAuthId: row.smartyAuthId,
-    hasSmartyAuthToken: Boolean(row.smartyAuthTokenEncrypted),
-    smartyConnectionStatus: row.smartyConnectionStatus,
-    smartyConnectionMessage: row.smartyConnectionMessage,
-    smartyLastTestedAt: row.smartyLastTestedAt,
-    smartyRemainingCredits: row.smartyRemainingCredits,
-    smartyMonthlyUsed: row.smartyMonthlyUsed,
-    smartyCreditsUpdatedAt: row.smartyCreditsUpdatedAt,
+    smartyCredentials,
+    smartyConnectionStatus,
+    smartyConnectionMessage,
     autoUpdateEnabled,
     updateFrequencyDays: row.updateFrequencyDays,
     updateHour: row.updateHour,

@@ -1839,6 +1839,65 @@ a {
   font-weight: 800;
 }
 
+.smarty-credential-list {
+  display: grid;
+  gap: 14px;
+}
+
+.smarty-credential-row {
+  padding: 16px;
+  border: 1px solid #d8eaf0;
+  border-radius: 10px;
+  display: grid;
+  gap: 14px;
+  background: #fbfeff;
+}
+
+.smarty-credential-row-head,
+.smarty-credential-meta,
+.smarty-credential-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.smarty-credential-row-head > span:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.smarty-credential-row-head strong {
+  color: #173052;
+  font-size: 14px;
+}
+
+.smarty-credential-row-head small,
+.smarty-credential-meta {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.smarty-credential-fields {
+  gap: 12px;
+}
+
+.smarty-credential-meta {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.smarty-credential-actions {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.smarty-credential-actions .settings-badge {
+  margin-left: auto;
+}
+
 .settings-inline-status,
 .next-run-card {
   border: 1px solid var(--line);
@@ -2097,9 +2156,16 @@ a {
 
   .settings-card-head,
   .settings-card-actions,
+  .smarty-credential-row-head,
+  .smarty-credential-actions,
   .editor-meta {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .smarty-credential-actions .settings-badge {
+    margin-left: 0;
+    align-self: flex-start;
   }
 
   .settings-card-actions button {

@@ -4,6 +4,7 @@ import type {
   AdminProxyListItem,
   AdminProxyListResponse,
   AdminProxyResponse,
+  AdminSmartyCredential,
   AdminSystemSettings,
   AdminSystemSettingsResponse,
   HeadCodeCheckResponse,
@@ -30,14 +31,22 @@ const frequencyOptions = [1, 2, 3, 4, 5, 10] as const;
 const hours = Array.from({ length: 24 }, (_, index) => index);
 const minutes = [0, 30] as const;
 
+interface SmartyCredentialForm {
+  key: string;
+  id?: number;
+  authId: string;
+  authToken: string;
+  hasAuthToken: boolean;
+  isActive: boolean;
+  lastStatus: AdminSmartyCredential['lastStatus'];
+  lastMessage: string | null;
+  lastCheckedAt: string | null;
+  lastUsedAt: string | null;
+}
+
 export function SystemSettings() {
   const [settings, setSettings] = useState<AdminSystemSettings | null>(null);
-  const [smartyForm, setSmartyForm] = useState({
-    authId: '',
-    authToken: '',
-    remainingCredits: '',
-    monthlyUsed: '',
-  });
+  const [smartyForm, setSmartyForm] = useState<SmartyCredentialForm[]>([]);
   const [proxies, setProxies] = useState<AdminProxyListItem[]>([]);
   const [proxyForm, setProxyForm] = useState({
     url: '',
@@ -60,6 +69,7 @@ export function SystemSettings() {
   }, []);
 
   const activeProxyCount = proxies.filter((proxy) => proxy.isActive).length;
+  const activeSmartyCount = settings?.smartyCredentials.filter((credential) => credential.isActive).length ?? 0;
 
   const updateLabel = useMemo(() => {
     if (!settings?.autoUpdateEnabled || !settings.updateFrequencyDays) {
@@ -86,12 +96,18 @@ export function SystemSettings() {
 
   function applySettings(next: AdminSystemSettings) {
     setSettings(next);
-    setSmartyForm({
-      authId: next.smartyAuthId,
+    setSmartyForm(next.smartyCredentials.map((credential) => ({
+      key: `saved-${credential.id}`,
+      id: credential.id,
+      authId: credential.authId,
       authToken: '',
-      remainingCredits: next.smartyRemainingCredits === null ? '' : String(next.smartyRemainingCredits),
-      monthlyUsed: next.smartyMonthlyUsed === null ? '' : String(next.smartyMonthlyUsed),
-    });
+      hasAuthToken: credential.hasAuthToken,
+      isActive: credential.isActive,
+      lastStatus: credential.lastStatus,
+      lastMessage: credential.lastMessage,
+      lastCheckedAt: credential.lastCheckedAt,
+      lastUsedAt: credential.lastUsedAt,
+    })));
     setScheduleForm({
       autoUpdateEnabled: next.autoUpdateEnabled,
       updateFrequencyDays: next.updateFrequencyDays === null ? 'none' : String(next.updateFrequencyDays),
@@ -110,15 +126,18 @@ export function SystemSettings() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          authId: smartyForm.authId,
-          authToken: smartyForm.authToken || undefined,
-          remainingCredits: numberOrNull(smartyForm.remainingCredits),
-          monthlyUsed: numberOrNull(smartyForm.monthlyUsed),
+          credentials: smartyForm.map((credential) => ({
+            id: credential.id,
+            authId: credential.authId,
+            authToken: credential.authToken || undefined,
+            isActive: credential.isActive,
+          })),
         }),
       });
 
       if (!response.ok) {
-        showToast('保存 Smarty 配置失败', 'error');
+        const body = (await response.json().catch(() => null)) as { message?: string } | null;
+        showToast(body?.message ?? '保存 Smarty 凭证池失败', 'error');
         return;
       }
 
@@ -128,9 +147,12 @@ export function SystemSettings() {
     });
   }
 
-  function testSmartyConnection() {
+  function testSmartyConnection(id?: number) {
     startTransition(async () => {
-      const response = await fetch(`${PUBLIC_API_BASE_URL}/api/admin/settings/smarty/test`, {
+      const endpoint = id
+        ? `${PUBLIC_API_BASE_URL}/api/admin/settings/smarty/${id}/test`
+        : `${PUBLIC_API_BASE_URL}/api/admin/settings/smarty/test`;
+      const response = await fetch(endpoint, {
         method: 'POST',
         credentials: 'include',
       });
@@ -143,8 +165,35 @@ export function SystemSettings() {
 
       const body = (await response.json()) as AdminSystemSettingsResponse;
       applySettings(body.settings);
-      showToast('Smarty 连接测试已完成', 'success');
+      showToast(id ? 'Smarty 账号测试已完成' : 'Smarty 凭证池测试已完成', 'success');
     });
+  }
+
+  function addSmartyCredential() {
+    setSmartyForm((current) => [
+      ...current,
+      {
+        key: `new-${Date.now()}-${current.length}`,
+        authId: '',
+        authToken: '',
+        hasAuthToken: false,
+        isActive: true,
+        lastStatus: 'not_tested',
+        lastMessage: null,
+        lastCheckedAt: null,
+        lastUsedAt: null,
+      },
+    ]);
+  }
+
+  function updateSmartyCredential(key: string, input: Partial<Pick<SmartyCredentialForm, 'authId' | 'authToken' | 'isActive'>>) {
+    setSmartyForm((current) => current.map((credential) => (
+      credential.key === key ? { ...credential, ...input } : credential
+    )));
+  }
+
+  function removeSmartyCredential(key: string) {
+    setSmartyForm((current) => current.filter((credential) => credential.key !== key));
   }
 
 
@@ -331,12 +380,12 @@ export function SystemSettings() {
       <section className="admin-page-heading">
         <div>
           <p className="admin-kicker">系统设置</p>
-          <p>配置 Smarty API 密钥、查看地址校验剩余额度、设置数据自动更新频率，并维护前台页面的 Head 代码。</p>
+          <p>管理 Smarty API 凭证池、设置数据自动更新频率，并维护前台页面的 Head 代码。</p>
         </div>
         <div className="admin-page-actions">
           <button disabled={isPending} type="button" onClick={() => startTransition(loadSettings)}>
             <RefreshCw size={16} aria-hidden="true" />
-            刷新额度
+            刷新设置
           </button>
           <button className="primary" disabled={isPending} type="button" onClick={saveAll}>
             <Save size={16} aria-hidden="true" />
@@ -347,69 +396,96 @@ export function SystemSettings() {
 
       <section className="admin-stats-grid">
         <SettingStat label="Smarty 连接" value={connectionLabel(settings.smartyConnectionStatus)} icon={<ShieldCheck size={21} />} />
-        <SettingStat label="剩余额度" value={formatNullableNumber(settings.smartyRemainingCredits)} icon={<CheckCircle2 size={21} />} />
-        <SettingStat label="本月已用" value={formatNullableNumber(settings.smartyMonthlyUsed)} icon={<RefreshCw size={21} />} />
+        <SettingStat label="账号总数" value={String(settings.smartyCredentials.length)} icon={<CheckCircle2 size={21} />} />
+        <SettingStat label="启用账号" value={String(activeSmartyCount)} icon={<Power size={21} />} />
         <SettingStat label="更新频率" value={updateLabel} icon={<Settings size={21} />} />
       </section>
 
       <form className="settings-card" onSubmit={saveSmarty}>
         <div className="settings-card-head">
           <div>
-            <h2>Smarty 密钥设置</h2>
-            <p>用于获取 RDI、CMRA、地址标准化和连接状态校验。</p>
+            <h2>Smarty 凭证池</h2>
+            <p>每批最多 100 个地址轮换账号，额度或鉴权失败时自动切换下一个启用账号。</p>
           </div>
           <span className={`settings-badge ${settings.smartyConnectionStatus}`}>{connectionLabel(settings.smartyConnectionStatus)}</span>
         </div>
         <div className="settings-card-body">
-          <div className="settings-form-grid">
-            <label>
-              <span>Auth ID</span>
-              <input
-                value={smartyForm.authId}
-                onChange={(event) => setSmartyForm((current) => ({ ...current, authId: event.target.value }))}
-                placeholder="Smarty Auth ID"
-              />
-              <small>保存后用于后台任务调用 Smarty API。</small>
-            </label>
-            <label>
-              <span>Auth Token</span>
-              <input
-                type="password"
-                value={smartyForm.authToken}
-                onChange={(event) => setSmartyForm((current) => ({ ...current, authToken: event.target.value }))}
-                placeholder={settings.hasSmartyAuthToken ? '已保存，输入新 Token 可重置' : 'Smarty Auth Token'}
-              />
-              <small>Token 加密存储，页面不返回明文。</small>
-            </label>
-            <label>
-              <span>剩余额度</span>
-              <input
-                inputMode="numeric"
-                value={smartyForm.remainingCredits}
-                onChange={(event) => setSmartyForm((current) => ({ ...current, remainingCredits: event.target.value }))}
-                placeholder="例如 18420"
-              />
-            </label>
-            <label>
-              <span>本月已用</span>
-              <input
-                inputMode="numeric"
-                value={smartyForm.monthlyUsed}
-                onChange={(event) => setSmartyForm((current) => ({ ...current, monthlyUsed: event.target.value }))}
-                placeholder="例如 3716"
-              />
-            </label>
+          <div className="smarty-credential-list">
+            {smartyForm.map((credential, index) => (
+              <div className="smarty-credential-row" key={credential.key}>
+                <div className="smarty-credential-row-head">
+                  <span>
+                    <strong>账号 {index + 1}</strong>
+                    <small>{credential.lastMessage ?? smartyCredentialStatusCopy(credential.lastStatus)}</small>
+                  </span>
+                  <span className={`settings-badge ${smartyCredentialBadgeClass(credential.lastStatus)}`}>
+                    {smartyCredentialStatusCopy(credential.lastStatus)}
+                  </span>
+                </div>
+                <div className="settings-form-grid smarty-credential-fields">
+                  <label>
+                    <span>Auth ID</span>
+                    <input
+                      value={credential.authId}
+                      onChange={(event) => updateSmartyCredential(credential.key, { authId: event.target.value })}
+                      placeholder="Smarty Auth ID"
+                    />
+                  </label>
+                  <label>
+                    <span>Auth Token</span>
+                    <input
+                      type="password"
+                      value={credential.authToken}
+                      onChange={(event) => updateSmartyCredential(credential.key, { authToken: event.target.value })}
+                      placeholder={credential.hasAuthToken ? '已保存，留空保持不变' : 'Smarty Auth Token'}
+                    />
+                  </label>
+                </div>
+                <div className="smarty-credential-meta">
+                  <span>最后验证：{credential.lastCheckedAt ? formatDateTime(credential.lastCheckedAt) : '尚未测试'}</span>
+                  <span>最后使用：{credential.lastUsedAt ? formatDateTime(credential.lastUsedAt) : '尚未使用'}</span>
+                </div>
+                <div className="proxy-actions smarty-credential-actions">
+                  <button
+                    disabled={isPending}
+                    type="button"
+                    onClick={() => updateSmartyCredential(credential.key, { isActive: !credential.isActive })}
+                  >
+                    <Power size={15} aria-hidden="true" />
+                    {credential.isActive ? '停用' : '启用'}
+                  </button>
+                  <button disabled={isPending || !credential.id} type="button" onClick={() => testSmartyConnection(credential.id)}>
+                    <RefreshCw size={15} aria-hidden="true" />
+                    测试
+                  </button>
+                  <button className="danger" disabled={isPending} type="button" onClick={() => removeSmartyCredential(credential.key)}>
+                    <Trash2 size={15} aria-hidden="true" />
+                    删除
+                  </button>
+                  <span className={`settings-badge ${credential.isActive ? 'connected' : 'not_configured'}`}>
+                    {credential.isActive ? '参与轮询' : '已停用'}
+                  </span>
+                </div>
+              </div>
+            ))}
+            {smartyForm.length === 0 ? <div className="proxy-empty">暂无 Smarty 账号，请先添加一组凭证。</div> : null}
           </div>
           <div className="settings-inline-status">
             <ShieldCheck size={20} aria-hidden="true" />
             <span>
               <strong>{settings.smartyConnectionMessage ?? connectionStatusCopy(settings)}</strong>
-              <small>最后测试：{settings.smartyLastTestedAt ? formatDateTime(settings.smartyLastTestedAt) : '尚未测试'}</small>
+              <small>测试操作会消耗对应账号一次 Smarty 查询；新账号需先保存后才能测试。</small>
             </span>
           </div>
           <div className="settings-card-actions">
-            <button disabled={isPending} type="button" onClick={testSmartyConnection}>测试连接</button>
-            <button className="primary" disabled={isPending} type="submit">保存 Smarty 配置</button>
+            <button disabled={isPending} type="button" onClick={addSmartyCredential}>
+              <Plus size={16} aria-hidden="true" />
+              添加账号
+            </button>
+            <button disabled={isPending || activeSmartyCount === 0} type="button" onClick={() => testSmartyConnection()}>
+              测试全部启用账号
+            </button>
+            <button className="primary" disabled={isPending} type="submit">保存凭证池</button>
           </div>
         </div>
       </form>
@@ -642,11 +718,6 @@ function SettingStat({ label, value, icon }: { label: string; value: string; ico
   );
 }
 
-function numberOrNull(value: string) {
-  const trimmed = value.trim();
-  return trimmed ? Number(trimmed) : null;
-}
-
 function proxyTestLabel(status: AdminProxyListItem['lastTestStatus']) {
   if (status === 'success') return '测试通过';
   if (status === 'failed') return '测试失败';
@@ -661,11 +732,19 @@ function connectionLabel(status: AdminSystemSettings['smartyConnectionStatus']) 
 function connectionStatusCopy(settings: AdminSystemSettings) {
   if (settings.smartyConnectionStatus === 'connected') return 'Smarty US Street API 校验通过';
   if (settings.smartyConnectionStatus === 'failed') return 'Smarty 连接测试失败';
-  return '保存 Auth ID 和 Auth Token 后可测试连接';
+  return '保存至少一组 Auth ID 和 Auth Token 后可测试连接';
 }
 
-function formatNullableNumber(value: number | null) {
-  return value === null ? '-' : value.toLocaleString();
+function smartyCredentialStatusCopy(status: AdminSmartyCredential['lastStatus']) {
+  if (status === 'success') return '可用';
+  if (status === 'failed') return '失败';
+  return '未测试';
+}
+
+function smartyCredentialBadgeClass(status: AdminSmartyCredential['lastStatus']) {
+  if (status === 'success') return 'connected';
+  if (status === 'failed') return 'failed';
+  return 'not_configured';
 }
 
 function formatDateTime(value: string) {

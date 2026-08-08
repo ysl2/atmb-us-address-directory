@@ -78,18 +78,27 @@ export interface AdminStateOption {
 }
 
 export type SmartyConnectionStatus = 'not_configured' | 'connected' | 'failed';
+export type SmartyCredentialStatus = 'not_tested' | 'success' | 'failed';
 export type UpdateFrequencyDays = 1 | 2 | 3 | 4 | 5 | 10;
 export type UpdateMinute = 0 | 30;
 
+export interface AdminSmartyCredential {
+  id: number;
+  authId: string;
+  hasAuthToken: boolean;
+  isActive: boolean;
+  lastStatus: SmartyCredentialStatus;
+  lastMessage: string | null;
+  lastCheckedAt: string | null;
+  lastUsedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AdminSystemSettings {
-  smartyAuthId: string;
-  hasSmartyAuthToken: boolean;
+  smartyCredentials: AdminSmartyCredential[];
   smartyConnectionStatus: SmartyConnectionStatus;
   smartyConnectionMessage: string | null;
-  smartyLastTestedAt: string | null;
-  smartyRemainingCredits: number | null;
-  smartyMonthlyUsed: number | null;
-  smartyCreditsUpdatedAt: string | null;
   autoUpdateEnabled: boolean;
   updateFrequencyDays: UpdateFrequencyDays | null;
   updateHour: number;

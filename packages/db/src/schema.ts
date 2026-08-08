@@ -300,6 +300,30 @@ export const proxyLibrary = sqliteTable(
   ],
 );
 
+export const smartyCredentials = sqliteTable(
+  'smarty_credentials',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    authId: text('auth_id').notNull(),
+    authTokenEncrypted: text('auth_token_encrypted').notNull(),
+    isActive: integer('is_active', { mode: 'boolean' }).notNull().default(true),
+    lastStatus: text('last_status', {
+      enum: ['not_tested', 'success', 'failed'],
+    }).notNull().default('not_tested'),
+    lastMessage: text('last_message'),
+    lastCheckedAt: text('last_checked_at'),
+    lastUsedAt: text('last_used_at'),
+    createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex('smarty_credentials_auth_id_unique').on(table.authId),
+    index('smarty_credentials_active_idx').on(table.isActive),
+    index('smarty_credentials_status_idx').on(table.lastStatus),
+    check('smarty_credentials_status_check', sql`${table.lastStatus} IN ('not_tested', 'success', 'failed')`),
+  ],
+);
+
 export const systemSettings = sqliteTable(
   'system_settings',
   {

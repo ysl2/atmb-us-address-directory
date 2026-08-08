@@ -3,7 +3,6 @@ import { z } from 'zod';
 
 import type { SettingsService } from './service.js';
 
-const nullableNonnegative = z.number().int().nonnegative().nullable();
 const frequencySchema = z.union([
   z.literal(1),
   z.literal(2),
@@ -14,10 +13,16 @@ const frequencySchema = z.union([
 ]);
 
 const smartySchema = z.object({
-  authId: z.string().trim().optional(),
-  authToken: z.string().optional(),
-  remainingCredits: nullableNonnegative.optional(),
-  monthlyUsed: nullableNonnegative.optional(),
+  credentials: z.array(z.object({
+    id: z.number().int().positive().optional(),
+    authId: z.string().trim().min(1),
+    authToken: z.string().trim().min(1).optional(),
+    isActive: z.boolean(),
+  })),
+});
+
+const smartyCredentialIdSchema = z.object({
+  id: z.coerce.number().int().positive(),
 });
 
 const updateScheduleSchema = z.object({
@@ -66,17 +71,51 @@ export function registerSettingsRoutes(app: FastifyInstance, settingsService: Se
       return reply.code(400).send({ message: 'Smarty 配置字段不正确' });
     }
 
-    return { settings: settingsService.saveSmartySettings(parsed.data) };
+    try {
+      return { settings: settingsService.saveSmartySettings(parsed.data) };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'SMARTY_TOKEN_REQUIRED') {
+        return reply.code(400).send({ message: '新增 Smarty 账号必须填写 Auth Token' });
+      }
+      if (error instanceof Error && error.message === 'SMARTY_DUPLICATE_AUTH_ID') {
+        return reply.code(400).send({ message: 'Smarty Auth ID 不能重复' });
+      }
+      if (error instanceof Error && error.message === 'SMARTY_DUPLICATE_CREDENTIAL_ID') {
+        return reply.code(400).send({ message: 'Smarty 账号 ID 不能重复' });
+      }
+      if (error instanceof Error && error.message === 'SMARTY_CREDENTIAL_NOT_FOUND') {
+        return reply.code(400).send({ message: 'Smarty 账号不存在，请刷新后重试' });
+      }
+      throw error;
+    }
   });
 
   app.post('/api/admin/settings/smarty/test', async (request, reply) => {
     if (!requireAdmin(request, reply)) return reply;
 
     try {
-      return { settings: await settingsService.testSmartyConnection() };
+      return { settings: await settingsService.testSmartyConnections() };
     } catch (error) {
       if (error instanceof Error && error.message === 'SMARTY_NOT_CONFIGURED') {
-        return reply.code(400).send({ message: '请先保存 Smarty Auth ID 和 Auth Token' });
+        return reply.code(400).send({ message: '请先保存并启用至少一个 Smarty 账号' });
+      }
+      throw error;
+    }
+  });
+
+  app.post('/api/admin/settings/smarty/:id/test', async (request, reply) => {
+    if (!requireAdmin(request, reply)) return reply;
+    const params = smartyCredentialIdSchema.safeParse(request.params);
+
+    if (!params.success) {
+      return reply.code(400).send({ message: 'Smarty 账号 ID 不正确' });
+    }
+
+    try {
+      return { settings: await settingsService.testSmartyCredential(params.data.id) };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'SMARTY_CREDENTIAL_NOT_FOUND') {
+        return reply.code(404).send({ message: 'Smarty 账号不存在' });
       }
       throw error;
     }

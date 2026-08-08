@@ -9,6 +9,7 @@ import {
   CrawlPipeline,
   HttpCrawlFetcher,
   HttpSmartyLookupClient,
+  SmartyRequestError,
   type CrawlFetcher,
   type CrawlFetchResult,
   type SmartyLookupClient,
@@ -935,6 +936,112 @@ test('keeps Smarty failures in staging and does not write Unknown addresses to t
   assert.equal(staged.importedAddressId, null);
 });
 
+test('rotates Smarty credential batches across the enabled pool', async () => {
+  const authIds: string[] = [];
+  const addresses = Array.from({ length: 201 }, (_, index) => crawledAddress({
+    name: `Pool Address ${index}`,
+    detailUrl: `https://locations.anytimemailbox.com/l/usa/alabama/pool-${index}`,
+    street: `${1000 + index} Pool Way`,
+    city: 'Huntsville',
+    zip: String(35801 + (index % 10)),
+    price: 'US$ 12.00',
+    mailboxNumbers: ['1', '3'],
+  }));
+  const harness = buildHarness(addresses, {
+    async lookupAddresses(credentials, inputs) {
+      authIds.push(credentials.authId);
+      return inputs.map((input) => ({
+        inputId: input.inputId,
+        rdi: 'Residential',
+        cmra: 'No',
+      }));
+    },
+  }, {
+    smartyCredentials: [
+      { authId: 'pool-a', authToken: 'token-a', isActive: true },
+      { authId: 'pool-b', authToken: 'token-b', isActive: true },
+      { authId: 'pool-c', authToken: 'token-c', isActive: true },
+      { authId: 'pool-disabled', authToken: 'token-disabled', isActive: false },
+    ],
+  });
+
+  const task = harness.taskService.createManualTask({ createdBy: 'Test Admin' });
+  await harness.pipeline.runTask(task.id);
+
+  assert.deepEqual(authIds, ['pool-a', 'pool-b', 'pool-c']);
+  assertTaskCompleted(harness.database, task.id);
+});
+
+test('fails over a Smarty batch and skips the failed credential for the rest of the task', async () => {
+  const authIds: string[] = [];
+  const addresses = Array.from({ length: 101 }, (_, index) => crawledAddress({
+    name: `Failover Address ${index}`,
+    detailUrl: `https://locations.anytimemailbox.com/l/usa/alabama/failover-${index}`,
+    street: `${2000 + index} Failover Ave`,
+    city: 'Birmingham',
+    zip: String(35201 + (index % 10)),
+    price: 'US$ 10.00',
+    mailboxNumbers: ['2', '4'],
+  }));
+  const harness = buildHarness(addresses, {
+    async lookupAddresses(credentials, inputs) {
+      authIds.push(credentials.authId);
+      if (credentials.authId === 'limited-account') {
+        throw new SmartyRequestError(402);
+      }
+      return inputs.map((input) => ({
+        inputId: input.inputId,
+        rdi: 'Commercial',
+        cmra: 'Yes',
+      }));
+    },
+  }, {
+    smartyCredentials: [
+      { authId: 'limited-account', authToken: 'limited-token', isActive: true },
+      { authId: 'healthy-account', authToken: 'healthy-token', isActive: true },
+    ],
+  });
+
+  const task = harness.taskService.createManualTask({ createdBy: 'Test Admin' });
+  await harness.pipeline.runTask(task.id);
+
+  assert.deepEqual(authIds, ['limited-account', 'healthy-account', 'healthy-account']);
+  const settings = harness.settingsService.getSettings();
+  assert.equal(settings.smartyCredentials.find((credential) => credential.authId === 'limited-account')?.lastStatus, 'failed');
+  assert.equal(settings.smartyCredentials.find((credential) => credential.authId === 'healthy-account')?.lastStatus, 'success');
+  assert.equal(harness.settingsService.getSmartyCredentialsPool().length, 2);
+  assertTaskCompleted(harness.database, task.id);
+});
+
+test('does not hide non-credential Smarty failures by switching accounts', async () => {
+  const authIds: string[] = [];
+  const harness = buildHarness([
+    crawledAddress({
+      name: 'Network Failure Address',
+      detailUrl: 'https://locations.anytimemailbox.com/l/usa/alabama/network-failure',
+      street: '3000 Network Rd',
+      city: 'Mobile',
+      zip: '36601',
+      price: 'US$ 11.00',
+      mailboxNumbers: ['5', '7'],
+    }),
+  ], {
+    async lookupAddresses(credentials) {
+      authIds.push(credentials.authId);
+      throw new Error('Smarty network unavailable');
+    },
+  }, {
+    smartyCredentials: [
+      { authId: 'network-a', authToken: 'token-a', isActive: true },
+      { authId: 'network-b', authToken: 'token-b', isActive: true },
+    ],
+  });
+  const task = harness.taskService.createManualTask({ createdBy: 'Test Admin' });
+
+  await assert.rejects(() => harness.pipeline.runTask(task.id), /Smarty network unavailable/);
+  assert.deepEqual(authIds, ['network-a']);
+});
+
 test('formats Smarty lookup payload with secondary address data and more candidates', async () => {
   const axiosWithPost = axios as unknown as { post: typeof axios.post };
   const originalPost = axiosWithPost.post;
@@ -1084,6 +1191,7 @@ function randomSequence(values: number[]) {
 
 function buildHarness(addresses: CrawledAddressFixture[], smartyClient: SmartyLookupClient, options: {
   fetcher?: CrawlFetcher;
+  smartyCredentials?: Array<{ authId: string; authToken: string; isActive: boolean }>;
 } = {}) {
   const database = createDatabase({ url: ':memory:' });
   ensureDatabaseSchema(database.sqlite);
@@ -1095,8 +1203,11 @@ function buildHarness(addresses: CrawledAddressFixture[], smartyClient: SmartyLo
   });
   settingsService.ensureDefaultSettings();
   settingsService.saveSmartySettings({
-    authId: 'smarty-auth-id',
-    authToken: 'smarty-auth-token',
+    credentials: options.smartyCredentials ?? [{
+      authId: 'smarty-auth-id',
+      authToken: 'smarty-auth-token',
+      isActive: true,
+    }],
   });
   const taskService = new TaskService(database);
   const fetcher = options.fetcher ?? createFixtureFetcher(addresses);

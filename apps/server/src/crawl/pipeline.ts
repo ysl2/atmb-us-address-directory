@@ -52,6 +52,7 @@ export interface HttpCrawlFetcherOptions {
 }
 
 export interface SmartyCredentials {
+  id?: number;
   authId: string;
   authToken: string;
 }
@@ -74,6 +75,13 @@ export interface SmartyLookupResult {
 
 export interface SmartyLookupClient {
   lookupAddresses(credentials: SmartyCredentials, inputs: SmartyLookupInput[], options?: RunTaskOptions): Promise<SmartyLookupResult[]>;
+}
+
+export class SmartyRequestError extends Error {
+  constructor(public readonly status: number) {
+    super(`Smarty returned ${status}`);
+    this.name = 'SmartyRequestError';
+  }
 }
 
 export interface RunTaskOptions {
@@ -798,8 +806,8 @@ export class CrawlPipeline {
       return { pendingCount: 0 };
     }
 
-    const credentials = this.options.settingsService.getSmartyCredentials();
-    if (!credentials) {
+    const credentials = this.options.settingsService.getSmartyCredentialsPool();
+    if (credentials.length === 0) {
       throw new Error('SMARTY_NOT_CONFIGURED');
     }
 
@@ -812,9 +820,40 @@ export class CrawlPipeline {
     }));
     const stageById = new Map(pending.map((row) => [String(row.id), row]));
 
+    let nextCredentialIndex = Math.max(0, taskId - 1) % credentials.length;
+    const unavailableCredentialIds = new Set<number>();
+
     for (const chunk of chunkSmartyInputs(inputs)) {
       await this.checkTaskControl(taskId, 'sync_smarty', runOptions);
-      const results = await this.smartyClient.lookupAddresses(credentials, chunk, runOptions);
+      let results: SmartyLookupResult[] | null = null;
+      let lastCredentialError: unknown = null;
+
+      for (let attempt = 0; attempt < credentials.length; attempt += 1) {
+        const credential = credentials[nextCredentialIndex];
+        nextCredentialIndex = (nextCredentialIndex + 1) % credentials.length;
+        if (!credential || unavailableCredentialIds.has(credential.id)) continue;
+
+        try {
+          results = await this.smartyClient.lookupAddresses(credential, chunk, runOptions);
+          this.options.settingsService.markSmartyCredentialSuccess(credential.id);
+          break;
+        } catch (error) {
+          if (!isSmartyCredentialFailure(error)) throw error;
+
+          unavailableCredentialIds.add(credential.id);
+          lastCredentialError = error;
+          this.options.settingsService.markSmartyCredentialFailure(
+            credential.id,
+            error instanceof Error ? error.message : 'Smarty credential failed',
+          );
+        }
+      }
+
+      if (!results) {
+        const detail = lastCredentialError instanceof Error ? `: ${lastCredentialError.message}` : '';
+        throw new Error(`SMARTY_POOL_EXHAUSTED${detail}`);
+      }
+
       const byInputId = new Map(results.map((result) => [result.inputId, result]));
 
       for (const input of chunk) {
@@ -1446,7 +1485,7 @@ export class HttpSmartyLookupClient implements SmartyLookupClient {
     });
 
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`Smarty returned ${response.status}`);
+      throw new SmartyRequestError(response.status);
     }
 
     const candidates = Array.isArray(response.data) ? response.data : [];
@@ -1575,6 +1614,15 @@ function chunkSmartyInputs(inputs: SmartyLookupInput[]) {
   }
 
   return chunks;
+}
+
+function isSmartyCredentialFailure(error: unknown) {
+  if (error instanceof SmartyRequestError) {
+    return [401, 402, 403, 429].includes(error.status);
+  }
+
+  const match = error instanceof Error ? error.message.match(/^Smarty returned (\d{3})$/) : null;
+  return match?.[1] ? [401, 402, 403, 429].includes(Number(match[1])) : false;
 }
 
 function addressSqlValues(row: StageRow) {

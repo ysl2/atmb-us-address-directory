@@ -12,7 +12,8 @@
 - 查看详情跳转 Anytime Mailbox 地址页。
 - 查看照片跳转 Google Maps，由用户自行判断街景。
 - 后台支持地址管理、任务管理、系统设置和登录认证。
-- 抓取 Anytime Mailbox 地址、邮箱编号范围，并增量同步 Smarty RDI / CMRA。
+- 抓取 Anytime Mailbox 地址、邮箱编号范围，并通过多账号 Auth 池增量同步 Smarty RDI / CMRA。
+- Smarty Auth 池支持多组 Auth ID / Auth Token、账号启停、轮询和额度故障转移。
 - 已成功获取过 RDI / CMRA 的地址不会重复请求 Smarty。
 - 支持 PM2 部署，SQLite 存储。
 
@@ -57,7 +58,7 @@ SESSION_SECRET=至少32位随机字符串
 | `ADDRESS_IMAGE_UPLOAD_DIR` | 街景图上传保存目录 |
 | `ADDRESS_IMAGE_PUBLIC_BASE` | 街景图公开访问路径 |
 
-Smarty 的 `Auth ID` 和 `Auth Token` 不写在 `.env`，请在后台「系统设置」页面保存。
+Smarty 的 `Auth ID` 和 `Auth Token` 不写在 `.env`，请在后台「系统设置」页面添加一组或多组凭证。Token 会加密保存；同步任务按批次轮询启用账号，并在账号鉴权、额度或限流失败时自动切换。
 
 ## 本地开发
 

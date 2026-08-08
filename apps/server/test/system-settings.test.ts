@@ -3,6 +3,7 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import Database from 'better-sqlite3';
+import { createDatabase, ensureDatabaseSchema } from '@atmb/db';
 
 import { createServer } from '../src/server.ts';
 
@@ -77,8 +78,7 @@ test('returns default system settings safely', async (t) => {
 
   assert.equal(response.statusCode, 200);
   const { settings } = response.json();
-  assert.equal(settings.smartyAuthId, '');
-  assert.equal(settings.hasSmartyAuthToken, false);
+  assert.deepEqual(settings.smartyCredentials, []);
   assert.equal(settings.smartyConnectionStatus, 'not_configured');
   assert.equal(settings.autoUpdateEnabled, true);
   assert.equal(settings.updateFrequencyDays, 1);
@@ -88,7 +88,7 @@ test('returns default system settings safely', async (t) => {
   assert.equal('smartyAuthToken' in settings, false);
 });
 
-test('saves Smarty settings without returning or storing plaintext token', async (t) => {
+test('saves a Smarty credential pool without returning or storing plaintext tokens', async (t) => {
   const databaseUrl = join(process.cwd(), '.runtime', 'test-system-settings.sqlite');
   rmSync(databaseUrl, { force: true });
   const app = await buildTestServer({ databaseUrl });
@@ -105,36 +105,100 @@ test('saves Smarty settings without returning or storing plaintext token', async
     url: '/api/admin/settings/smarty',
     headers: { cookie },
     payload: {
-      authId: 'smarty-auth-id',
-      authToken: 'smarty-secret-token',
-      remainingCredits: 18420,
-      monthlyUsed: 3716,
+      credentials: [
+        { authId: 'smarty-auth-id-1', authToken: 'smarty-secret-token-1', isActive: true },
+        { authId: 'smarty-auth-id-2', authToken: 'smarty-secret-token-2', isActive: false },
+      ],
     },
   });
 
   assert.equal(response.statusCode, 200);
   const { settings } = response.json();
-  assert.equal(settings.smartyAuthId, 'smarty-auth-id');
-  assert.equal(settings.hasSmartyAuthToken, true);
-  assert.equal(settings.smartyRemainingCredits, 18420);
-  assert.equal(settings.smartyMonthlyUsed, 3716);
-  assert.equal('smartyAuthToken' in settings, false);
+  assert.equal(settings.smartyCredentials.length, 2);
+  assert.deepEqual(
+    settings.smartyCredentials.map((credential: { authId: string; hasAuthToken: boolean; isActive: boolean }) => ({
+      authId: credential.authId,
+      hasAuthToken: credential.hasAuthToken,
+      isActive: credential.isActive,
+    })),
+    [
+      { authId: 'smarty-auth-id-1', hasAuthToken: true, isActive: true },
+      { authId: 'smarty-auth-id-2', hasAuthToken: true, isActive: false },
+    ],
+  );
+  assert.equal(JSON.stringify(settings).includes('smarty-secret-token'), false);
 
   sqlite = new Database(databaseUrl);
-  const row = sqlite
-    .prepare('SELECT smarty_auth_token_encrypted AS token FROM system_settings WHERE id = 1')
-    .get() as { token: string };
-  assert.notEqual(row.token, 'smarty-secret-token');
-  assert.match(row.token, /^v1:/);
+  const rows = sqlite
+    .prepare('SELECT auth_token_encrypted AS token FROM smarty_credentials ORDER BY id')
+    .all() as Array<{ token: string }>;
+  assert.equal(rows.length, 2);
+  assert.ok(rows.every((row) => row.token !== 'smarty-secret-token-1' && row.token !== 'smarty-secret-token-2'));
+  assert.ok(rows.every((row) => /^v1:/.test(row.token)));
 });
 
-test('tests Smarty connection and records success or failure', async (t) => {
+test('updates, disables, renames, and removes Smarty credentials while retaining blank tokens', async (t) => {
+  const databaseUrl = join(process.cwd(), '.runtime', 'test-smarty-pool-updates.sqlite');
+  rmSync(databaseUrl, { force: true });
+  const app = await buildTestServer({ databaseUrl });
+  t.after(async () => {
+    await app.close();
+    rmSync(databaseUrl, { force: true });
+  });
+  const cookie = await loginCookie(app);
+  const created = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/settings/smarty',
+    headers: { cookie },
+    payload: {
+      credentials: [
+        { authId: 'account-a', authToken: 'token-a', isActive: true },
+        { authId: 'account-b', authToken: 'token-b', isActive: true },
+      ],
+    },
+  });
+  const [accountA] = created.json().settings.smartyCredentials as Array<{ id: number }>;
+  assert.ok(accountA);
+
+  const sqlite = new Database(databaseUrl);
+  const encryptedBefore = (sqlite
+    .prepare('SELECT auth_token_encrypted AS token FROM smarty_credentials WHERE id = ?')
+    .get(accountA.id) as { token: string }).token;
+
+  const updated = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/settings/smarty',
+    headers: { cookie },
+    payload: {
+      credentials: [
+        { id: accountA.id, authId: 'account-a-renamed', isActive: false },
+      ],
+    },
+  });
+
+  assert.equal(updated.statusCode, 200);
+  assert.equal(updated.json().settings.smartyCredentials.length, 1);
+  assert.equal(updated.json().settings.smartyCredentials[0].authId, 'account-a-renamed');
+  assert.equal(updated.json().settings.smartyCredentials[0].isActive, false);
+  const encryptedAfter = (sqlite
+    .prepare('SELECT auth_token_encrypted AS token FROM smarty_credentials WHERE id = ?')
+    .get(accountA.id) as { token: string }).token;
+  const rowCount = (sqlite.prepare('SELECT COUNT(*) AS count FROM smarty_credentials').get() as { count: number }).count;
+  sqlite.close();
+
+  assert.equal(encryptedAfter, encryptedBefore);
+  assert.equal(rowCount, 1);
+});
+
+test('tests individual and all enabled Smarty credentials', async (t) => {
+  const testedAuthIds: string[] = [];
   const app = await buildTestServer({
     smartyClient: {
       async testConnection(credentials) {
-        assert.equal(credentials.authId, 'smarty-auth-id');
-        assert.equal(credentials.authToken, 'smarty-secret-token');
-        return { ok: true };
+        testedAuthIds.push(credentials.authId);
+        return credentials.authId === 'smarty-auth-id-1'
+          ? { ok: true }
+          : { ok: false, message: 'Smarty 返回 402' };
       },
     },
   });
@@ -146,8 +210,11 @@ test('tests Smarty connection and records success or failure', async (t) => {
     url: '/api/admin/settings/smarty',
     headers: { cookie },
     payload: {
-      authId: 'smarty-auth-id',
-      authToken: 'smarty-secret-token',
+      credentials: [
+        { authId: 'smarty-auth-id-1', authToken: 'smarty-secret-token-1', isActive: true },
+        { authId: 'smarty-auth-id-2', authToken: 'smarty-secret-token-2', isActive: true },
+        { authId: 'smarty-auth-id-disabled', authToken: 'disabled-token', isActive: false },
+      ],
     },
   });
 
@@ -159,7 +226,98 @@ test('tests Smarty connection and records success or failure', async (t) => {
 
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().settings.smartyConnectionStatus, 'connected');
-  assert.ok(response.json().settings.smartyLastTestedAt);
+  assert.deepEqual(testedAuthIds, ['smarty-auth-id-1', 'smarty-auth-id-2']);
+  const credentials = response.json().settings.smartyCredentials;
+  assert.equal(credentials[0].lastStatus, 'success');
+  assert.equal(credentials[1].lastStatus, 'failed');
+  assert.equal(credentials[2].lastStatus, 'not_tested');
+
+  const individualResponse = await app.inject({
+    method: 'POST',
+    url: `/api/admin/settings/smarty/${credentials[2].id}/test`,
+    headers: { cookie },
+  });
+  assert.equal(individualResponse.statusCode, 200);
+  assert.deepEqual(testedAuthIds, ['smarty-auth-id-1', 'smarty-auth-id-2', 'smarty-auth-id-disabled']);
+});
+
+test('validates new Smarty credentials and duplicate Auth IDs', async (t) => {
+  const app = await buildTestServer();
+  t.after(() => app.close());
+  const cookie = await loginCookie(app);
+
+  const missingToken = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/settings/smarty',
+    headers: { cookie },
+    payload: { credentials: [{ authId: 'new-account', isActive: true }] },
+  });
+  assert.equal(missingToken.statusCode, 400);
+
+  const duplicates = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/settings/smarty',
+    headers: { cookie },
+    payload: {
+      credentials: [
+        { authId: 'duplicate', authToken: 'token-1', isActive: true },
+        { authId: 'duplicate', authToken: 'token-2', isActive: true },
+      ],
+    },
+  });
+  assert.equal(duplicates.statusCode, 400);
+});
+
+test('migrates the legacy single Smarty credential into the pool once', async (t) => {
+  const databaseUrl = join(process.cwd(), '.runtime', 'test-smarty-legacy-migration.sqlite');
+  rmSync(databaseUrl, { force: true });
+  const database = createDatabase({ url: databaseUrl });
+  ensureDatabaseSchema(database.sqlite);
+  database.sqlite.prepare(`
+    INSERT INTO system_settings (
+      id, smarty_auth_id, smarty_auth_token_encrypted,
+      smarty_connection_status, smarty_connection_message, smarty_last_tested_at,
+      created_at, updated_at
+    ) VALUES (
+      1, 'legacy-auth-id', 'v1:legacy-token',
+      'connected', 'legacy connection passed', '2026-08-08T00:00:00.000Z',
+      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+    )
+  `).run();
+  database.sqlite.close();
+
+  const app = await buildTestServer({ databaseUrl });
+  t.after(async () => {
+    await app.close();
+    rmSync(databaseUrl, { force: true });
+  });
+
+  const sqlite = new Database(databaseUrl);
+  const migrated = sqlite.prepare(`
+    SELECT auth_id AS authId, auth_token_encrypted AS token,
+           last_status AS lastStatus, last_message AS lastMessage, last_checked_at AS lastCheckedAt
+    FROM smarty_credentials
+  `).get() as {
+    authId: string;
+    token: string;
+    lastStatus: string;
+    lastMessage: string;
+    lastCheckedAt: string;
+  };
+  const legacy = sqlite.prepare('SELECT smarty_auth_id AS authId, smarty_auth_token_encrypted AS token FROM system_settings').get() as {
+    authId: string;
+    token: string | null;
+  };
+  sqlite.close();
+
+  assert.deepEqual(migrated, {
+    authId: 'legacy-auth-id',
+    token: 'v1:legacy-token',
+    lastStatus: 'success',
+    lastMessage: 'legacy connection passed',
+    lastCheckedAt: '2026-08-08T00:00:00.000Z',
+  });
+  assert.deepEqual(legacy, { authId: '', token: null });
 });
 
 test('validates update schedule and saves head code', async (t) => {
