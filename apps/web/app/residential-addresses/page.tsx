@@ -20,6 +20,7 @@ import {
 import { getPublicHeadCode } from '../_lib/public-head-code';
 import { AddressRowClickState } from '../_components/AddressRowClickState';
 import { PublicHeadCode } from '../_components/PublicHeadCode';
+import { PublicPriceRangeFields } from '../_components/PublicPriceRangeFields';
 import { SiteFooter, SiteHeader } from '../_components/SiteShell';
 
 export const revalidate = 3600;
@@ -27,7 +28,7 @@ export const revalidate = 3600;
 export const metadata: Metadata = {
   title: '美国真实住宅地址（RDI Residential）| Anytime Mailbox 私人地址精选',
   description:
-    '已默认过滤 RDI = Residential 的 Anytime Mailbox(ATMB) 美国住宅地址候选，再用 CMRA 与关键词二次筛选，帮你更快找到接近真实私人住宅、适合美国信用卡与银行开户的地址。',
+    '已默认过滤 RDI = Residential 的 Anytime Mailbox(ATMB) 美国住宅地址候选，再用 CMRA、关键词与价格区间二次筛选，帮你更快找到接近真实私人住宅、适合美国信用卡与银行开户的地址。',
   alternates: {
     canonical: '/residential-addresses',
   },
@@ -122,17 +123,17 @@ export default async function ResidentialAddressesPage({ searchParams }: Residen
             </nav>
             <div className="addresses-hero-grid">
               <div>
-                <p className="site-eyebrow">住宅地址筛选入口 · 支持关键词与 CMRA 筛选</p>
+                <p className="site-eyebrow">住宅地址筛选入口 · 支持关键词、CMRA 与价格区间筛选</p>
                 <h1>Anytime Mailbox 住宅地址</h1>
                 <p className="addresses-hero-copy">
                   浏览全站筛选出的 RDI Residential 地址候选。你可以用关键词查找城市、州、ZIP 或街道，
-                  并通过 CMRA 过滤地址类型，再进入详情页查看街景跳转、价格、邮箱编号范围和每日监控变化。
+                  并通过 CMRA 与月租价格区间过滤地址类型，再进入详情页查看街景跳转、价格、邮箱编号范围和每日监控变化。
                 </p>
                 <div className="addresses-proof-list" aria-label="页面能力">
                   <span><span><Check size={15} aria-hidden="true" /></span>关键词搜索</span>
                   <span><span><Check size={15} aria-hidden="true" /></span>固定 RDI Residential</span>
                   <span><span><Check size={15} aria-hidden="true" /></span>CMRA 筛选</span>
-                  <span><span><Check size={15} aria-hidden="true" /></span>每日监控更新</span>
+                  <span><span><Check size={15} aria-hidden="true" /></span>价格区间筛选</span>
                 </div>
               </div>
               <aside className="addresses-stat-panel" aria-label="住宅地址概览">
@@ -147,7 +148,7 @@ export default async function ResidentialAddressesPage({ searchParams }: Residen
                 </div>
                 <div>
                   <span>当前筛选</span>
-                  <strong>{formatCompactCount(data.total)}</strong>
+                  <strong>{filters.priceError ? '—' : formatCompactCount(data.total)}</strong>
                 </div>
               </aside>
             </div>
@@ -181,10 +182,21 @@ export default async function ResidentialAddressesPage({ searchParams }: Residen
                 <option value="none">无</option>
               </select>
             </label>
+            <PublicPriceRangeFields
+              error={filters.priceError}
+              idPrefix="residential"
+              maxPrice={filters.maxPrice}
+              minPrice={filters.minPrice}
+            />
             <button type="submit">
               <Search size={18} aria-hidden="true" />
               搜索地址
             </button>
+            {filters.priceError ? (
+              <p className="addresses-filter-error" id="residential-price-error" role="alert">
+                {filters.priceError}
+              </p>
+            ) : null}
           </form>
 
           <div className="addresses-search-note">
@@ -202,17 +214,42 @@ export default async function ResidentialAddressesPage({ searchParams }: Residen
             </div>
             <span className="addresses-update-pill">
               <Database size={18} aria-hidden="true" />
-              显示 {data.start}-{data.end} / {formatNumber(data.total)}
+              {filters.priceError ? '尚未查询' : `显示 ${data.start}-${data.end} / ${formatNumber(data.total)}`}
             </span>
           </div>
 
           <div className="addresses-result-panel">
             <div className="addresses-result-toolbar">
               <div className="addresses-result-count">
-                找到 <strong>{formatNumber(data.total)}</strong> 个 RDI Residential 地址
+                {filters.priceError ? (
+                  '价格区间有误，尚未查询地址'
+                ) : (
+                  <>找到 <strong>{formatNumber(data.total)}</strong> 个 RDI Residential 地址</>
+                )}
               </div>
             </div>
-            {data.items.length > 0 ? (
+            {filters.priceError ? (
+              <div className="addresses-empty">
+                <strong>价格区间需要调整</strong>
+                <p>{filters.priceError}</p>
+                <div className="addresses-empty-actions">
+                  <Link href={buildResidentialAddressesPageUrl(filters, {
+                    q: '',
+                    cmra: '',
+                    minPrice: '',
+                    maxPrice: '',
+                    page: 1,
+                  })}>
+                    <RefreshCw size={15} aria-hidden="true" />
+                    清除全部筛选
+                  </Link>
+                  <a href="#residential-search-title">
+                    <Search size={15} aria-hidden="true" />
+                    返回筛选条件
+                  </a>
+                </div>
+              </div>
+            ) : data.items.length > 0 ? (
               <div className="addresses-list" role="list">
                 <AddressRowClickState />
                 {data.items.map((address) => (
@@ -247,9 +284,15 @@ export default async function ResidentialAddressesPage({ searchParams }: Residen
             ) : (
               <div className="addresses-empty">
                 <strong>没有找到匹配住宅地址</strong>
-                <p>可以减少关键词，或清除 CMRA 筛选后重新搜索。</p>
+                <p>可以减少关键词，或清除 CMRA 和价格筛选后重新搜索。</p>
                 <div className="addresses-empty-actions">
-                  <Link href={buildResidentialAddressesPageUrl(filters, { q: '', cmra: '', page: 1 })}>
+                  <Link href={buildResidentialAddressesPageUrl(filters, {
+                    q: '',
+                    cmra: '',
+                    minPrice: '',
+                    maxPrice: '',
+                    page: 1,
+                  })}>
                     <RefreshCw size={15} aria-hidden="true" />
                     清除全部筛选
                   </Link>
@@ -260,7 +303,7 @@ export default async function ResidentialAddressesPage({ searchParams }: Residen
                 </div>
               </div>
             )}
-            <nav className="addresses-pagination" aria-label="住宅地址列表分页">
+            {!filters.priceError ? <nav className="addresses-pagination" aria-label="住宅地址列表分页">
               <span>第 {data.page} 页，共 {data.totalPages} 页</span>
               <div>
                 {data.page > 1 ? (
@@ -287,7 +330,7 @@ export default async function ResidentialAddressesPage({ searchParams }: Residen
                   <span className="disabled">下一页</span>
                 )}
               </div>
-            </nav>
+            </nav> : null}
           </div>
         </section>
 
@@ -295,7 +338,7 @@ export default async function ResidentialAddressesPage({ searchParams }: Residen
           <div className="addresses-section-head">
             <div>
               <h2 id="residential-seo-title">如何使用住宅地址页面筛选美国住宅地址？</h2>
-              <p>这个页面面向 Residential 地址浏览场景：先用关键词找到城市、ZIP 或街道，再用 CMRA 判断是否接近你的使用需求。</p>
+              <p>这个页面面向 Residential 地址浏览场景：先用关键词找到城市、ZIP 或街道，再用 CMRA 和价格区间判断是否接近你的使用需求。</p>
             </div>
           </div>
           <div className="addresses-seo-grid">

@@ -1,5 +1,6 @@
 import {
   getPublicAddressesPageData,
+  parsePublicAddressFilters,
   type PublicAddressesPageData,
   type PublicAddressFilters,
 } from './public-address-data';
@@ -9,6 +10,9 @@ export const PUBLIC_RESIDENTIAL_RESULT_HASH = '#residential-list-title';
 export interface PublicResidentialAddressFilters {
   q: string;
   cmra: string;
+  minPrice: string;
+  maxPrice: string;
+  priceError: string;
   page: number;
 }
 
@@ -23,10 +27,15 @@ export async function getPublicResidentialAddressesPageData(
 export function parsePublicResidentialAddressFilters(
   searchParams: SearchParams = {},
 ): PublicResidentialAddressFilters {
+  const filters = parsePublicAddressFilters(searchParams);
+
   return {
-    q: normalizeKeyword(firstParam(searchParams.q)),
-    cmra: normalizeEnumParam(firstParam(searchParams.cmra), ['Yes', 'No', 'none']),
-    page: normalizePage(firstParam(searchParams.page)),
+    q: filters.q,
+    cmra: filters.cmra,
+    minPrice: filters.minPrice,
+    maxPrice: filters.maxPrice,
+    priceError: filters.priceError,
+    page: filters.page,
   };
 }
 
@@ -39,6 +48,8 @@ export function buildResidentialAddressesPageUrl(
 
   if (nextFilters.q) params.set('q', nextFilters.q);
   if (nextFilters.cmra) params.set('cmra', nextFilters.cmra);
+  if (nextFilters.minPrice) params.set('minPrice', nextFilters.minPrice);
+  if (nextFilters.maxPrice) params.set('maxPrice', nextFilters.maxPrice);
   if (nextFilters.page > 1) params.set('page', String(nextFilters.page));
 
   const query = params.toString();
@@ -51,25 +62,9 @@ function toAddressFilters(filters: PublicResidentialAddressFilters): PublicAddre
     state: '',
     rdi: 'Residential',
     cmra: filters.cmra,
-    price: '',
+    minPrice: filters.minPrice,
+    maxPrice: filters.maxPrice,
+    priceError: filters.priceError,
     page: filters.page,
   };
-}
-
-function firstParam(value: string | string[] | undefined) {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function normalizeKeyword(value: string | undefined) {
-  return value?.trim().slice(0, 80) ?? '';
-}
-
-function normalizeEnumParam(value: string | undefined, allowedValues: string[]) {
-  const normalized = value?.trim() ?? '';
-  return allowedValues.includes(normalized) ? normalized : '';
-}
-
-function normalizePage(value: string | undefined) {
-  const page = Number.parseInt(value ?? '1', 10);
-  return Number.isFinite(page) && page > 0 ? page : 1;
 }

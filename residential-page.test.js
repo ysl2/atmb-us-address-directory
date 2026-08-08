@@ -13,7 +13,7 @@ test('residential page uses real data and no static rows', () => {
   assert.doesNotMatch(source, /'use client'|"use client"/);
 });
 
-test('residential filters only expose keyword, CMRA and page', async () => {
+test('residential filters expose keyword, CMRA, price range and page', async () => {
   const helpers = await import('./apps/web/app/_lib/public-residential-address-data.ts');
 
   assert.deepEqual(
@@ -22,12 +22,16 @@ test('residential filters only expose keyword, CMRA and page', async () => {
       state: 'CA',
       rdi: 'Commercial',
       cmra: 'No',
-      price: 'lt20',
+      minPrice: '10',
+      maxPrice: '20',
       page: '2',
     }),
     {
       q: 'vancouver',
       cmra: 'No',
+      minPrice: '10',
+      maxPrice: '20',
+      priceError: '',
       page: 2,
     },
   );
@@ -38,17 +42,28 @@ test('residential urls preserve filters and scroll back to results', async () =>
   const filters = {
     q: 'vancouver',
     cmra: 'No',
+    minPrice: '10',
+    maxPrice: '20',
+    priceError: '',
     page: 2,
   };
 
   assert.equal(
     helpers.buildResidentialAddressesPageUrl(filters, { page: 3 }),
-    '/residential-addresses?q=vancouver&cmra=No&page=3#residential-list-title',
+    '/residential-addresses?q=vancouver&cmra=No&minPrice=10&maxPrice=20&page=3#residential-list-title',
   );
   assert.equal(
     helpers.buildResidentialAddressesPageUrl(filters, { cmra: 'Yes', page: 1 }),
-    '/residential-addresses?q=vancouver&cmra=Yes#residential-list-title',
+    '/residential-addresses?q=vancouver&cmra=Yes&minPrice=10&maxPrice=20#residential-list-title',
   );
+});
+
+test('residential page uses the shared public price range fields', () => {
+  const source = readFileSync('apps/web/app/residential-addresses/page.tsx', 'utf8');
+
+  assert.match(source, /PublicPriceRangeFields/);
+  assert.match(source, /filters\.priceError/);
+  assert.doesNotMatch(source, /name="price"/);
 });
 
 test('residential address detail links use the referral-gated redirect', () => {

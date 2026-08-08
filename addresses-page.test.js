@@ -1,6 +1,9 @@
 const assert = require('node:assert/strict');
-const { readFileSync } = require('node:fs');
+const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
 const test = require('node:test');
+const Database = require('better-sqlite3');
 
 test('addresses page uses real SQLite data integration points', () => {
   const source = readFileSync('apps/web/app/addresses/page.tsx', 'utf8');
@@ -44,24 +47,150 @@ test('public address page urls preserve filters and scroll back to results', asy
     state: 'CA',
     rdi: 'Residential',
     cmra: 'No',
-    price: 'lt20',
+    minPrice: '10',
+    maxPrice: '20',
+    priceError: '',
     page: 3,
   };
 
   assert.equal(
     helpers.buildAddressesPageUrl(filters, { page: 2 }),
-    '/addresses?q=mail&state=CA&rdi=Residential&cmra=No&price=lt20&page=2#address-list-title',
+    '/addresses?q=mail&state=CA&rdi=Residential&cmra=No&minPrice=10&maxPrice=20&page=2#address-list-title',
   );
   assert.equal(
     helpers.buildAddressesPageUrl(filters, { state: 'TX', page: 1 }),
-    '/addresses?q=mail&state=TX&rdi=Residential&cmra=No&price=lt20#address-list-title',
+    '/addresses?q=mail&state=TX&rdi=Residential&cmra=No&minPrice=10&maxPrice=20#address-list-title',
   );
+});
+
+test('public address price filters validate dollars and preserve legacy links', async () => {
+  const helpers = await import('./apps/web/app/_lib/public-address-data.ts');
+
+  const range = helpers.parsePublicAddressFilters({ minPrice: '10.50', maxPrice: '20' });
+  assert.equal(range.minPrice, '10.50');
+  assert.equal(range.maxPrice, '20');
+  assert.equal(range.priceError, '');
+
+  assert.match(
+    helpers.parsePublicAddressFilters({ minPrice: '20', maxPrice: '10' }).priceError,
+    /最低价格不能高于最高价格/,
+  );
+  assert.match(
+    helpers.parsePublicAddressFilters({ minPrice: '-1' }).priceError,
+    /大于等于 0/,
+  );
+  assert.match(
+    helpers.parsePublicAddressFilters({ maxPrice: '10.123' }).priceError,
+    /最多保留两位小数/,
+  );
+
+  const legacyUpperBound = helpers.parsePublicAddressFilters({ price: 'lt20' });
+  assert.equal(legacyUpperBound.minPrice, '');
+  assert.equal(legacyUpperBound.maxPrice, '19.99');
+  const legacyLowerBound = helpers.parsePublicAddressFilters({ price: 'gte20' });
+  assert.equal(legacyLowerBound.minPrice, '20');
+  assert.equal(legacyLowerBound.maxPrice, '');
+});
+
+test('public address price range query includes both boundaries and supports one-sided filters', async () => {
+  const helpers = await import('./apps/web/app/_lib/public-address-data.ts');
+  const tempDirectory = mkdtempSync(join(tmpdir(), 'atmb-price-range-'));
+  const databaseUrl = join(tempDirectory, 'addresses.sqlite');
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  const sqlite = new Database(databaseUrl);
+
+  try {
+    sqlite.exec(`
+      CREATE TABLE states (code TEXT PRIMARY KEY, name TEXT NOT NULL);
+      CREATE TABLE addresses (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        anytime_url TEXT NOT NULL,
+        state TEXT NOT NULL,
+        state_name TEXT NOT NULL,
+        city TEXT NOT NULL,
+        street_address TEXT NOT NULL,
+        postal_code TEXT NOT NULL,
+        full_address TEXT NOT NULL,
+        price_cents INTEGER NOT NULL,
+        rdi TEXT,
+        cmra TEXT,
+        mailbox_min INTEGER,
+        mailbox_max INTEGER,
+        updated_at TEXT NOT NULL,
+        is_active INTEGER NOT NULL,
+        is_visible INTEGER NOT NULL
+      );
+      INSERT INTO states (code, name) VALUES ('CA', 'California');
+    `);
+
+    const insertAddress = sqlite.prepare(`
+      INSERT INTO addresses (
+        id, name, anytime_url, state, state_name, city, street_address, postal_code,
+        full_address, price_cents, rdi, cmra, mailbox_min, mailbox_max, updated_at,
+        is_active, is_visible
+      ) VALUES (
+        @id, @name, @url, 'CA', 'California', 'Los Angeles', '1 Main St', '90001',
+        '1 Main St, Los Angeles, CA 90001', @priceCents, 'Residential', 'No', 1, 10,
+        '2026-08-08T00:00:00.000Z', 1, 1
+      )
+    `);
+
+    [999, 1000, 1500, 2000, 2001].forEach((priceCents, index) => {
+      insertAddress.run({
+        id: index + 1,
+        name: `Address ${index + 1}`,
+        url: `https://example.test/address-${index + 1}`,
+        priceCents,
+      });
+    });
+    sqlite.close();
+    process.env.DATABASE_URL = databaseUrl;
+
+    const rangeData = await helpers.getPublicAddressesPageData(
+      helpers.parsePublicAddressFilters({ minPrice: '10', maxPrice: '20' }),
+    );
+    assert.equal(rangeData.total, 3);
+    assert.deepEqual(rangeData.items.map((item) => item.price), ['US$ 20.00', 'US$ 15.00', 'US$ 10.00']);
+
+    const maximumData = await helpers.getPublicAddressesPageData(
+      helpers.parsePublicAddressFilters({ maxPrice: '10' }),
+    );
+    assert.equal(maximumData.total, 2);
+
+    const minimumData = await helpers.getPublicAddressesPageData(
+      helpers.parsePublicAddressFilters({ minPrice: '20' }),
+    );
+    assert.equal(minimumData.total, 2);
+
+    const invalidData = await helpers.getPublicAddressesPageData(
+      helpers.parsePublicAddressFilters({ minPrice: '20', maxPrice: '10' }),
+    );
+    assert.equal(invalidData.total, 0);
+    assert.equal(invalidData.stats.totalAddresses, 5);
+    assert.equal(invalidData.states.length, 1);
+  } finally {
+    if (sqlite.open) sqlite.close();
+    if (previousDatabaseUrl === undefined) {
+      delete process.env.DATABASE_URL;
+    } else {
+      process.env.DATABASE_URL = previousDatabaseUrl;
+    }
+    rmSync(tempDirectory, { force: true, recursive: true });
+  }
 });
 
 test('addresses filter form submits to the result section anchor', () => {
   const source = readFileSync('apps/web/app/addresses/page.tsx', 'utf8');
+  const priceFields = readFileSync('apps/web/app/_components/PublicPriceRangeFields.tsx', 'utf8');
 
   assert.match(source, /action="\/addresses#address-list-title"/);
+  assert.match(source, /PublicPriceRangeFields/);
+  assert.match(priceFields, /name="minPrice"/);
+  assert.match(priceFields, /name="maxPrice"/);
+  assert.match(priceFields, /type="number"/);
+  assert.match(priceFields, /step="0\.01"/);
+  assert.doesNotMatch(source, /name="price"/);
 });
 
 test('public address rows expose hover and visited visual states', () => {

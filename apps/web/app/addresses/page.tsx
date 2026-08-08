@@ -21,6 +21,7 @@ import {
 import { getPublicHeadCode } from '../_lib/public-head-code';
 import { AddressRowClickState } from '../_components/AddressRowClickState';
 import { PublicHeadCode } from '../_components/PublicHeadCode';
+import { PublicPriceRangeFields } from '../_components/PublicPriceRangeFields';
 import { SiteFooter, SiteHeader } from '../_components/SiteShell';
 
 export const revalidate = 3600;
@@ -189,19 +190,21 @@ export default async function AddressesPage({ searchParams }: AddressesPageProps
                 <option value="none">无</option>
               </select>
             </label>
-            <label>
-              <span>价格</span>
-              <select name="price" defaultValue={filters.price}>
-                <option value="">全部价格</option>
-                <option value="lt10">小于 US$ 10</option>
-                <option value="lt20">小于 US$ 20</option>
-                <option value="gte20">大于等于 US$ 20</option>
-              </select>
-            </label>
+            <PublicPriceRangeFields
+              error={filters.priceError}
+              idPrefix="addresses"
+              maxPrice={filters.maxPrice}
+              minPrice={filters.minPrice}
+            />
             <button type="submit">
               <Search size={18} aria-hidden="true" />
               搜索地址
             </button>
+            {filters.priceError ? (
+              <p className="addresses-filter-error" id="addresses-price-error" role="alert">
+                {filters.priceError}
+              </p>
+            ) : null}
           </form>
 
           <div className="addresses-state-filter">
@@ -254,18 +257,47 @@ export default async function AddressesPage({ searchParams }: AddressesPageProps
             </div>
             <span className="addresses-update-pill">
               <Database size={18} aria-hidden="true" />
-              显示 {data.start}-{data.end} / {formatNumber(data.total)}
+              {filters.priceError ? '尚未查询' : `显示 ${data.start}-${data.end} / ${formatNumber(data.total)}`}
             </span>
           </div>
 
           <div className="addresses-result-panel">
             <div className="addresses-result-toolbar">
               <div className="addresses-result-count">
-                找到 <strong>{formatNumber(data.total)}</strong> 个 Anytime Mailbox 地址
-                {data.selectedStateLabel ? <span> · {data.selectedStateLabel}</span> : null}
+                {filters.priceError ? (
+                  '价格区间有误，尚未查询地址'
+                ) : (
+                  <>
+                    找到 <strong>{formatNumber(data.total)}</strong> 个 Anytime Mailbox 地址
+                    {data.selectedStateLabel ? <span> · {data.selectedStateLabel}</span> : null}
+                  </>
+                )}
               </div>
             </div>
-            {data.items.length > 0 ? (
+            {filters.priceError ? (
+              <div className="addresses-empty">
+                <strong>价格区间需要调整</strong>
+                <p>{filters.priceError}</p>
+                <div className="addresses-empty-actions">
+                  <Link href={buildAddressesPageUrl(filters, {
+                    q: '',
+                    state: '',
+                    rdi: '',
+                    cmra: '',
+                    minPrice: '',
+                    maxPrice: '',
+                    page: 1,
+                  })}>
+                    <RefreshCw size={15} aria-hidden="true" />
+                    清除全部筛选
+                  </Link>
+                  <a href="#addresses-search-title">
+                    <Search size={15} aria-hidden="true" />
+                    返回筛选条件
+                  </a>
+                </div>
+              </div>
+            ) : data.items.length > 0 ? (
               <div className="addresses-list" role="list">
                 <AddressRowClickState />
                 {data.items.map((address) => (
@@ -307,7 +339,15 @@ export default async function AddressesPage({ searchParams }: AddressesPageProps
                 <strong>没有找到匹配地址</strong>
                 <p>可以减少关键词，或清除 RDI、CMRA、价格和州筛选后重新搜索。</p>
                 <div className="addresses-empty-actions">
-                  <Link href={buildAddressesPageUrl(filters, { q: '', state: '', rdi: '', cmra: '', price: '', page: 1 })}>
+                  <Link href={buildAddressesPageUrl(filters, {
+                    q: '',
+                    state: '',
+                    rdi: '',
+                    cmra: '',
+                    minPrice: '',
+                    maxPrice: '',
+                    page: 1,
+                  })}>
                     <RefreshCw size={15} aria-hidden="true" />
                     清除全部筛选
                   </Link>
@@ -318,7 +358,7 @@ export default async function AddressesPage({ searchParams }: AddressesPageProps
                 </div>
               </div>
             )}
-            <nav className="addresses-pagination" aria-label="地址列表分页">
+            {!filters.priceError ? <nav className="addresses-pagination" aria-label="地址列表分页">
               <span>第 {data.page} 页，共 {data.totalPages} 页</span>
               <div>
                 {data.page > 1 ? (
@@ -345,7 +385,7 @@ export default async function AddressesPage({ searchParams }: AddressesPageProps
                   <span className="disabled">下一页</span>
                 )}
               </div>
-            </nav>
+            </nav> : null}
           </div>
         </section>
 

@@ -5055,7 +5055,7 @@ a {
 
 .addresses-search-form {
   display: grid;
-  grid-template-columns: 1.45fr 0.78fr 0.72fr 0.78fr 180px;
+  grid-template-columns: 1.45fr 0.72fr 0.68fr 1.12fr 180px;
   gap: 15px;
   align-items: end;
 }
@@ -5070,6 +5070,7 @@ a {
 
 .addresses-input-like,
 .addresses-search-form select,
+.addresses-price-input,
 .addresses-search-form button {
   min-height: 46px;
   border-radius: 6px;
@@ -5136,6 +5137,76 @@ a {
   font-weight: 850;
   box-shadow: 0 16px 28px rgba(5, 127, 147, 0.18);
   cursor: pointer;
+}
+
+.addresses-price-range-field {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  gap: 8px;
+}
+
+.addresses-price-range-field legend {
+  margin: 0 0 8px;
+  padding: 0;
+  color: #122849;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.addresses-price-range-inputs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+}
+
+.addresses-price-range-inputs > span {
+  color: #74869a;
+  font-weight: 800;
+}
+
+.addresses-search-form .addresses-price-input {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--home-line-strong);
+  background: #fbfdff;
+}
+
+.addresses-price-input:focus-within {
+  border-color: var(--home-teal);
+  box-shadow: 0 0 0 3px rgba(5, 127, 147, 0.1);
+}
+
+.addresses-price-input input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  padding: 0 10px;
+  background: transparent;
+  color: #213a5a;
+  font: inherit;
+}
+
+.addresses-price-input input::placeholder {
+  color: #74869a;
+}
+
+.addresses-filter-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  border: 1px solid #f0b8b8;
+  border-radius: 6px;
+  padding: 9px 12px;
+  background: #fff5f5;
+  color: #a62323;
+  font-size: 13px;
+  font-weight: 750;
 }
 
 .addresses-state-filter {
@@ -5718,7 +5789,7 @@ a {
 }
 
 .residential-page .addresses-search-form {
-  grid-template-columns: 1.7fr 0.72fr 162px;
+  grid-template-columns: 1.5fr 0.68fr 1fr 162px;
 }
 
 .residential-page .addresses-keyword-field {
@@ -5833,6 +5904,7 @@ a {
 
   .addresses-input-like,
   .addresses-search-form select,
+  .addresses-price-input,
   .addresses-search-form button {
     min-height: 44px;
     font-size: 14px;

@@ -12,7 +12,9 @@ export interface PublicAddressFilters {
   state: string;
   rdi: string;
   cmra: string;
-  price: string;
+  minPrice: string;
+  maxPrice: string;
+  priceError: string;
   page: number;
 }
 
@@ -112,6 +114,16 @@ export async function getPublicAddressesPageData(filters: PublicAddressFilters):
     const states = listPublicStates(sqlite);
     const selectedState = filters.state ? states.find((state) => state.code === filters.state) : null;
     const stats = readPublicAddressStats(sqlite);
+
+    if (filters.priceError) {
+      return {
+        ...emptyAddressesPageData(filters),
+        states,
+        stats,
+        selectedStateLabel: selectedState?.label ?? null,
+      };
+    }
+
     const { where, params } = buildAddressWhere(filters);
     const totalRow = sqlite.prepare(`SELECT COUNT(*) AS count FROM addresses a ${where}`).get(...params) as CountRow;
     const total = totalRow.count;
@@ -173,14 +185,14 @@ export async function getPublicAddressesPageData(filters: PublicAddressFilters):
 export function parsePublicAddressFilters(searchParams: SearchParams = {}): PublicAddressFilters {
   const rdi = normalizeEnumParam(firstParam(searchParams.rdi), ['Residential', 'Commercial', 'none']);
   const cmra = normalizeEnumParam(firstParam(searchParams.cmra), ['Yes', 'No', 'none']);
-  const price = normalizeEnumParam(firstParam(searchParams.price), ['lt10', 'lt20', 'gte20']);
+  const priceRange = parsePublicPriceRange(searchParams);
 
   return {
     q: normalizeKeyword(firstParam(searchParams.q)),
     state: normalizeState(firstParam(searchParams.state)),
     rdi,
     cmra,
-    price,
+    ...priceRange,
     page: normalizePage(firstParam(searchParams.page)),
   };
 }
@@ -196,7 +208,8 @@ export function buildAddressesPageUrl(
   if (nextFilters.state) params.set('state', nextFilters.state);
   if (nextFilters.rdi) params.set('rdi', nextFilters.rdi);
   if (nextFilters.cmra) params.set('cmra', nextFilters.cmra);
-  if (nextFilters.price) params.set('price', nextFilters.price);
+  if (nextFilters.minPrice) params.set('minPrice', nextFilters.minPrice);
+  if (nextFilters.maxPrice) params.set('maxPrice', nextFilters.maxPrice);
   if (nextFilters.page > 1) params.set('page', String(nextFilters.page));
 
   const query = params.toString();
@@ -264,15 +277,17 @@ function buildAddressWhere(filters: PublicAddressFilters) {
     params.push(filters.cmra);
   }
 
-  if (filters.price === 'lt10') {
-    where.push('a.price_cents < ?');
-    params.push(1000);
-  } else if (filters.price === 'lt20') {
-    where.push('a.price_cents < ?');
-    params.push(2000);
-  } else if (filters.price === 'gte20') {
+  const minPriceCents = parsePriceCents(filters.minPrice);
+  const maxPriceCents = parsePriceCents(filters.maxPrice);
+
+  if (minPriceCents !== null) {
     where.push('a.price_cents >= ?');
-    params.push(2000);
+    params.push(minPriceCents);
+  }
+
+  if (maxPriceCents !== null) {
+    where.push('a.price_cents <= ?');
+    params.push(maxPriceCents);
   }
 
   return {
@@ -398,6 +413,51 @@ function normalizeEnumParam(value: string | undefined, allowedValues: string[]) 
 function normalizePage(value: string | undefined) {
   const page = Number.parseInt(value ?? '1', 10);
   return Number.isFinite(page) && page > 0 ? page : 1;
+}
+
+function parsePublicPriceRange(searchParams: SearchParams) {
+  const rawMinPrice = firstParam(searchParams.minPrice);
+  const rawMaxPrice = firstParam(searchParams.maxPrice);
+  const hasNewPriceParams = rawMinPrice !== undefined || rawMaxPrice !== undefined;
+  const legacyPrice = hasNewPriceParams ? '' : firstParam(searchParams.price);
+  const minPrice = (rawMinPrice ?? (legacyPrice === 'gte20' ? '20' : '')).trim();
+  const maxPrice = (
+    rawMaxPrice
+    ?? (legacyPrice === 'lt10' ? '9.99' : legacyPrice === 'lt20' ? '19.99' : '')
+  ).trim();
+  const minPriceCents = parsePriceCents(minPrice);
+  const maxPriceCents = parsePriceCents(maxPrice);
+
+  if ((minPrice && minPriceCents === null) || (maxPrice && maxPriceCents === null)) {
+    return {
+      minPrice,
+      maxPrice,
+      priceError: '价格必须是大于等于 0 且最多保留两位小数的美元金额。',
+    };
+  }
+
+  if (minPriceCents !== null && maxPriceCents !== null && minPriceCents > maxPriceCents) {
+    return {
+      minPrice,
+      maxPrice,
+      priceError: '最低价格不能高于最高价格，请调整后重新筛选。',
+    };
+  }
+
+  return {
+    minPrice,
+    maxPrice,
+    priceError: '',
+  };
+}
+
+function parsePriceCents(value: string) {
+  if (!value) return null;
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return null;
+
+  const [dollars, fraction = ''] = value.split('.');
+  const cents = Number(dollars) * 100 + Number(fraction.padEnd(2, '0'));
+  return Number.isSafeInteger(cents) ? cents : null;
 }
 
 function escapeLike(value: string) {
