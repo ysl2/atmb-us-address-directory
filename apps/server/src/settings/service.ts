@@ -19,8 +19,9 @@ import type {
 } from '@atmb/shared';
 
 import type { ServerConfig } from '../auth/config.js';
-import { DEFAULT_CRAWL_HEADERS, parseLocationList } from '../crawl/parser.js';
-import { normalizeProxyUrl, proxyUrlToAxiosProxy, type CrawlProxy } from '../proxy.js';
+import { parseLocationDetail, parseLocationList } from '../crawl/parser.js';
+import { HttpCrawlFetcher } from '../crawl/pipeline.js';
+import { normalizeProxyUrl, type CrawlProxy } from '../proxy.js';
 
 export interface SmartyClient {
   testConnection(credentials: { authId: string; authToken: string }): Promise<{
@@ -120,34 +121,40 @@ export class HttpSmartyClient implements SmartyClient {
 
 export class HttpProxyTester implements ProxyTester {
   async testProxy(proxy: AdminProxyListItem): Promise<ProxyTestResult> {
-    const state = US_STATES[Math.floor(Math.random() * US_STATES.length)] ?? US_STATES[0];
+    const state = US_STATES.find((item) => item.slug === 'alabama') ?? US_STATES[0];
     if (!state) {
       return { ok: false, message: 'No state target available' };
     }
 
     const url = `https://www.anytimemailbox.com/l/usa/${state.slug}`;
+    const fetcher = new HttpCrawlFetcher({
+      proxyProvider: () => ({ id: proxy.id, url: proxy.url }),
+      requestDelayMs: { min: 0, max: 0 },
+    });
 
     try {
-      const response = await axios.get(url, {
-        timeout: 15000,
-        responseType: 'text',
-        transformResponse: [(data) => data],
-        headers: DEFAULT_CRAWL_HEADERS,
-        proxy: proxyUrlToAxiosProxy(proxy.url),
-        validateStatus: () => true,
-      });
-
+      const response = await fetcher.fetchHtml(url);
       if (response.status < 200 || response.status >= 300) {
         return { ok: false, message: `ATMB state page returned ${response.status}` };
       }
 
-      const html = typeof response.data === 'string' ? response.data : String(response.data ?? '');
-      const locations = parseLocationList(html, url);
-      const sample = locations[0]?.address || locations[0]?.name;
+      const locations = parseLocationList(response.html, url);
+      const sampleLocation = locations[0];
+      if (!sampleLocation) {
+        return { ok: false, message: `No addresses parsed from ${state.name}` };
+      }
 
-      return locations.length > 0
-        ? { ok: true, message: `Parsed ${locations.length} address(es) from ${state.name}`, sampleAddress: sample }
-        : { ok: false, message: `No addresses parsed from ${state.name}` };
+      const detailResponse = await fetcher.fetchHtml(sampleLocation.url, { referer: url });
+      const detail = parseLocationDetail(detailResponse.html, detailResponse.finalUrl);
+      const sample = detail.detailAddress || sampleLocation.address || sampleLocation.name;
+
+      return detail.address
+        ? {
+            ok: true,
+            message: `Parsed ${locations.length} address(es) from ${state.name}; detail page reachable`,
+            sampleAddress: sample,
+          }
+        : { ok: false, message: `Detail page did not contain an address for ${sampleLocation.name}` };
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : 'Proxy test failed' };
     }
@@ -480,6 +487,7 @@ export class SettingsService {
     const current = this.getProxyRow(id);
     const now = new Date().toISOString();
     const nextUrl = input.url === undefined ? current.url : normalizeProxyUrl(input.url);
+    const urlChanged = nextUrl !== current.url;
 
     this.database.sqlite
       .prepare(`
@@ -488,6 +496,10 @@ export class SettingsService {
           url = @url,
           note = @note,
           is_active = @isActive,
+          last_test_status = @lastTestStatus,
+          last_test_message = @lastTestMessage,
+          last_test_sample_address = @lastTestSampleAddress,
+          last_tested_at = @lastTestedAt,
           updated_at = @updatedAt
         WHERE id = @id
       `)
@@ -496,6 +508,10 @@ export class SettingsService {
         url: nextUrl,
         note: input.note === undefined ? current.note : normalizeProxyNote(input.note),
         isActive: input.isActive === undefined ? current.isActive : input.isActive ? 1 : 0,
+        lastTestStatus: urlChanged ? 'not_tested' : current.lastTestStatus,
+        lastTestMessage: urlChanged ? null : current.lastTestMessage,
+        lastTestSampleAddress: urlChanged ? null : current.lastTestSampleAddress,
+        lastTestedAt: urlChanged ? null : current.lastTestedAt,
         updatedAt: now,
       });
 

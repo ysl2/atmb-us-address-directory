@@ -6,7 +6,11 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { AddressCmra, AddressRdi, AdminSubtaskType } from '@atmb/shared';
 
-import { proxyUrlToAxiosProxy, type CrawlProxy } from '../proxy.js';
+import {
+  proxyUrlToAxiosRequestOptions,
+  proxyUrlToCurlArgs,
+  type CrawlProxy,
+} from '../proxy.js';
 import type { SettingsService } from '../settings/service.js';
 import type { TaskService } from '../tasks/service.js';
 import {
@@ -1437,11 +1441,13 @@ export class HttpCrawlFetcher implements CrawlFetcher {
     signal: AbortSignal | undefined,
     error: unknown,
   ) {
-    if (!isAxiosForbiddenError(error)) return null;
+    if (!isAxiosBlockedResponse(error)) return null;
 
     try {
       const result = await this.curlFetch(url, { headers, proxy, signal });
-      return result.status >= 200 && result.status < 400 ? result : null;
+      return result.status >= 200 && result.status < 400 && !isCloudflareChallengeHtml(result.html)
+        ? result
+        : null;
     } catch {
       return null;
     }
@@ -1717,7 +1723,7 @@ function extractHtmlTitle(html: string) {
 }
 
 function axiosProxyOption(proxy: CrawlProxy | null) {
-  return proxy ? { proxy: proxyUrlToAxiosProxy(proxy.url) } : {};
+  return proxy ? proxyUrlToAxiosRequestOptions(proxy.url) : {};
 }
 
 function headersForRequest(options: CrawlFetchOptions, profile: Record<string, string>) {
@@ -1748,8 +1754,9 @@ function safeRandom(random: () => number) {
   return Number.isFinite(value) ? Math.max(0, Math.min(0.999999, value)) : 0;
 }
 
-function isAxiosForbiddenError(error: unknown) {
-  return axios.isAxiosError(error) && Number(error.response?.status) === 403;
+function isAxiosBlockedResponse(error: unknown) {
+  if (!axios.isAxiosError(error)) return false;
+  return [403, 429].includes(Number(error.response?.status));
 }
 
 function isRetryableNetworkError(error: unknown) {
@@ -1774,6 +1781,10 @@ async function defaultCurlFetch(url: string, options: { headers: Record<string, 
 
   for (const [name, value] of Object.entries(options.headers)) {
     args.push('-H', `${name}: ${value}`);
+  }
+
+  if (options.proxy) {
+    args.push(...proxyUrlToCurlArgs(options.proxy.url));
   }
 
   args.push('--write-out', `${CURL_META_MARKER}%{http_code}\t%{url_effective}\t%{content_type}`, url);
@@ -1819,7 +1830,11 @@ function isCloudflareChallengeResponse(response: { status?: number; headers?: un
   const html = typeof response.data === 'string' ? response.data : String(response.data ?? '');
 
   return cfMitigated === 'challenge'
-    || (server.includes('cloudflare') && /Just a moment|challenges\.cloudflare\.com|cf_chl/i.test(html));
+    || (server.includes('cloudflare') && isCloudflareChallengeHtml(html));
+}
+
+function isCloudflareChallengeHtml(html: string) {
+  return /Just a moment|challenges\.cloudflare\.com|cf_chl/i.test(html);
 }
 
 function createCloudflareChallengeError(url: string, response: { status?: number; headers?: unknown; data?: unknown }) {

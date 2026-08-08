@@ -508,9 +508,9 @@ export function SystemSettings() {
               <input
                 value={proxyForm.url}
                 onChange={(event) => setProxyForm((current) => ({ ...current, url: event.target.value }))}
-                placeholder="http://user:pass@host:port"
+                placeholder="socks5h://user:pass@host:port"
               />
-              <small>支持 HTTP/HTTPS；只填 host:port 时默认按 HTTP 保存。</small>
+              <small>支持 HTTP/HTTPS/SOCKS5/SOCKS5H；只填 host:port 时默认按 HTTP 保存。</small>
             </label>
             <label>
               <span>备注</span>

@@ -139,7 +139,7 @@ export function registerSettingsRoutes(app: FastifyInstance, settingsService: Se
       return { item: settingsService.createProxy(parsed.data) };
     } catch (error) {
       if (error instanceof Error && (error.message === 'INVALID_PROXY_URL' || error.message === 'UNSUPPORTED_PROXY_PROTOCOL')) {
-        return reply.code(400).send({ message: '代理地址仅支持 HTTP/HTTPS host:port 格式' });
+        return reply.code(400).send({ message: '代理地址支持 HTTP、HTTPS、SOCKS5 或 SOCKS5H host:port 格式' });
       }
       throw error;
     }
@@ -161,7 +161,7 @@ export function registerSettingsRoutes(app: FastifyInstance, settingsService: Se
         return reply.code(404).send({ message: '代理不存在' });
       }
       if (error instanceof Error && (error.message === 'INVALID_PROXY_URL' || error.message === 'UNSUPPORTED_PROXY_PROTOCOL')) {
-        return reply.code(400).send({ message: '代理地址仅支持 HTTP/HTTPS host:port 格式' });
+        return reply.code(400).send({ message: '代理地址支持 HTTP、HTTPS、SOCKS5 或 SOCKS5H host:port 格式' });
       }
       throw error;
     }

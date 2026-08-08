@@ -17,7 +17,11 @@ import {
   type SmartyLookupResult,
 } from '../src/crawl/pipeline.ts';
 import { parseLocationDetail } from '../src/crawl/parser.ts';
-import { SettingsService } from '../src/settings/service.ts';
+import {
+  normalizeProxyUrl,
+  proxyUrlToCurlArgs,
+} from '../src/proxy.ts';
+import { HttpProxyTester, SettingsService } from '../src/settings/service.ts';
 import { shouldCreateSystemTask } from '../src/tasks/scheduler.ts';
 import { TaskService } from '../src/tasks/service.ts';
 
@@ -163,6 +167,78 @@ test('HTTP crawl fetcher retries once with curl after Axios returns 403', async 
     getMock.mock.restore();
   }
 });
+
+test('HTTP crawl fetcher retries once with the same proxy after Axios returns 429', async () => {
+  const getMock = mock.method(axios, 'get', async () => {
+    throw {
+      isAxiosError: true,
+      response: {
+        status: 429,
+        headers: {
+          'cf-mitigated': 'challenge',
+          server: 'cloudflare',
+        },
+        data: '<html><title>Just a moment...</title></html>',
+      },
+    };
+  });
+  const curlCalls: Array<{ proxyUrl?: string }> = [];
+  const fetcher = new HttpCrawlFetcher({
+    random: () => 0,
+    requestDelayMs: { min: 0, max: 0 },
+    proxyProvider: () => ({ id: 2, url: 'socks5h://127.0.0.1:6153' }),
+    curlFetch: async (url, options) => {
+      curlCalls.push({ proxyUrl: options.proxy?.url });
+      return {
+        url,
+        finalUrl: url,
+        html: '<html><title>Anytime Mailbox</title></html>',
+        status: 200,
+      };
+    },
+  });
+
+  try {
+    const result = await fetcher.fetchHtml('https://www.anytimemailbox.com/s/test-address');
+    assert.equal(result.status, 200);
+    assert.deepEqual(curlCalls, [{ proxyUrl: 'socks5h://127.0.0.1:6153' }]);
+  } finally {
+    getMock.mock.restore();
+  }
+});
+
+test('HTTP crawl fetcher rejects a Cloudflare challenge returned by curl fallback', async () => {
+  const getMock = mock.method(axios, 'get', async () => {
+    throw {
+      isAxiosError: true,
+      response: {
+        status: 429,
+        headers: { 'cf-mitigated': 'challenge', server: 'cloudflare' },
+        data: '<html><title>Just a moment...</title></html>',
+      },
+    };
+  });
+  const fetcher = new HttpCrawlFetcher({
+    random: () => 0,
+    requestDelayMs: { min: 0, max: 0 },
+    curlFetch: async (url) => ({
+      url,
+      finalUrl: url,
+      html: '<html><title>Just a moment...</title><script src="/cf_chl.js"></script></html>',
+      status: 200,
+    }),
+  });
+
+  try {
+    await assert.rejects(
+      () => fetcher.fetchHtml('https://www.anytimemailbox.com/s/test-address'),
+      /Cloudflare challenge.*status=429/,
+    );
+  } finally {
+    getMock.mock.restore();
+  }
+});
+
 test('HTTP crawl fetcher applies a random active proxy to Axios requests', async () => {
   const configs: unknown[] = [];
   const getMock = mock.method(axios, 'get', async (_url: string, config: unknown) => {
@@ -192,6 +268,107 @@ test('HTTP crawl fetcher applies a random active proxy to Axios requests', async
     port: 8080,
     auth: { username: 'user', password: 'pass' },
   });
+});
+
+test('HTTP crawl fetcher configures a SOCKS5H agent without Axios native proxy handling', async () => {
+  const configs: unknown[] = [];
+  const getMock = mock.method(axios, 'get', async (_url: string, config: unknown) => {
+    configs.push(config);
+    return {
+      status: 200,
+      data: '<html></html>',
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    };
+  });
+  const fetcher = new HttpCrawlFetcher({
+    random: () => 0,
+    requestDelayMs: { min: 0, max: 0 },
+    proxyProvider: () => ({ id: 1, url: 'socks5h://user:pass@127.0.0.1:6153' }),
+  });
+
+  try {
+    await fetcher.fetchHtml('https://www.anytimemailbox.com/l/usa');
+  } finally {
+    getMock.mock.restore();
+  }
+
+  const config = configs[0] as { proxy?: unknown; httpAgent?: unknown; httpsAgent?: unknown };
+  assert.equal(config.proxy, false);
+  assert.ok(config.httpAgent);
+  assert.equal(config.httpAgent, config.httpsAgent);
+  assert.equal(config.httpAgent?.constructor.name, 'SocksProxyAgent');
+});
+
+test('proxy URLs accept SOCKS5 transports and curl receives the normalized URL', () => {
+  assert.equal(normalizeProxyUrl('127.0.0.1:8080'), 'http://127.0.0.1:8080');
+  assert.equal(normalizeProxyUrl('socks5://127.0.0.1:6153'), 'socks5://127.0.0.1:6153');
+  assert.equal(normalizeProxyUrl('socks5h://user:pass@127.0.0.1:6153/path'), 'socks5h://user:pass@127.0.0.1:6153');
+  assert.deepEqual(proxyUrlToCurlArgs('socks5h://127.0.0.1:6153'), [
+    '--proxy',
+    'socks5h://127.0.0.1:6153',
+  ]);
+  assert.throws(() => normalizeProxyUrl('ftp://127.0.0.1:21'), /UNSUPPORTED_PROXY_PROTOCOL/);
+});
+
+test('proxy tester checks both a state list and a real detail page', async () => {
+  const calls: Array<{ url: string; referer?: string }> = [];
+  const fetchMock = mock.method(HttpCrawlFetcher.prototype, 'fetchHtml', async (url: string, options = {}) => {
+    calls.push({ url, referer: options.referer });
+
+    if (/\/l\/usa\//.test(url)) {
+      return {
+        url,
+        finalUrl: url,
+        status: 200,
+        html: `
+          <div class="theme-location-item">
+            <div class="t-title">Austin</div>
+            <div class="t-addr">1 Main St Austin, TX 78701</div>
+            <div class="t-price"><b>US$ 10.00</b></div>
+            <a class="gt-plan" href="/s/austin-main-st">View</a>
+          </div>
+        `,
+      };
+    }
+
+    return {
+      url,
+      finalUrl: url,
+      status: 200,
+      html: `
+        <div class="t-addr"><div class="t-text">
+          <div>1 Main St</div>
+          <div>Austin, TX 78701</div>
+          <div>United States</div>
+        </div></div>
+      `,
+    };
+  });
+  const tester = new HttpProxyTester();
+
+  try {
+    const result = await tester.testProxy({
+      id: 1,
+      url: 'socks5h://127.0.0.1:6153',
+      note: null,
+      isActive: true,
+      lastTestStatus: 'not_tested',
+      lastTestMessage: null,
+      lastTestSampleAddress: null,
+      lastTestedAt: null,
+      createdAt: '2026-08-08T00:00:00.000Z',
+      updatedAt: '2026-08-08T00:00:00.000Z',
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(result.message ?? '', /detail page reachable/);
+    assert.equal(calls.length, 2);
+    assert.match(calls[0]?.url ?? '', /\/l\/usa\/alabama$/);
+    assert.match(calls[1]?.url ?? '', /\/s\/austin-main-st$/);
+    assert.match(calls[1]?.referer ?? '', /\/l\/usa\//);
+  } finally {
+    fetchMock.mock.restore();
+  }
 });
 
 test('HTTP crawl fetcher retries TLS ECONNRESET ten times with five second delays and the same proxy', async () => {

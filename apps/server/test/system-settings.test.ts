@@ -436,6 +436,47 @@ test('manages proxy library entries and records proxy test result', async (t) =>
   assert.equal(testResponse.json().item.lastTestMessage, 'Parsed 1 address from Texas');
   assert.equal(testResponse.json().item.lastTestSampleAddress, 'Austin, TX 78701');
 
+  const socksUpdateResponse = await app.inject({
+    method: 'PATCH',
+    url: `/api/admin/settings/proxies/${created.id}`,
+    headers: { cookie },
+    payload: {
+      url: 'socks5h://127.0.0.1:6153',
+    },
+  });
+
+  assert.equal(socksUpdateResponse.statusCode, 200);
+  assert.equal(socksUpdateResponse.json().item.url, 'socks5h://127.0.0.1:6153');
+  assert.equal(socksUpdateResponse.json().item.lastTestStatus, 'not_tested');
+  assert.equal(socksUpdateResponse.json().item.lastTestMessage, null);
+  assert.equal(socksUpdateResponse.json().item.lastTestSampleAddress, null);
+  assert.equal(socksUpdateResponse.json().item.lastTestedAt, null);
+
+  const socksTestResponse = await app.inject({
+    method: 'POST',
+    url: `/api/admin/settings/proxies/${created.id}/test`,
+    headers: { cookie },
+  });
+
+  assert.equal(socksTestResponse.statusCode, 200);
+  assert.equal(socksTestResponse.json().item.lastTestStatus, 'success');
+  assert.deepEqual(tested, [
+    { url: 'http://127.0.0.1:8080', isActive: false },
+    { url: 'socks5h://127.0.0.1:6153', isActive: false },
+  ]);
+
+  const unsupportedProxyResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/settings/proxies',
+    headers: { cookie },
+    payload: {
+      url: 'ftp://127.0.0.1:21',
+    },
+  });
+
+  assert.equal(unsupportedProxyResponse.statusCode, 400);
+  assert.match(unsupportedProxyResponse.json().message, /SOCKS5/);
+
   const listResponse = await app.inject({
     method: 'GET',
     url: '/api/admin/settings/proxies',

@@ -26,6 +26,7 @@
     "fastify": "^5.8.5",
     "node-cron": "^4.2.1",
     "p-queue": "^9.3.0",
+    "socks-proxy-agent": "^10.1.0",
     "zod": "^4.4.3"
   }
 }

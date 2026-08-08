@@ -1,3 +1,6 @@
+import type { AxiosRequestConfig } from 'axios';
+import { SocksProxyAgent } from 'socks-proxy-agent';
+
 export interface CrawlProxy {
   id: number;
   url: string;
@@ -12,6 +15,10 @@ export interface AxiosProxyOptions {
     password: string;
   };
 }
+
+export type AxiosProxyRequestOptions = Pick<AxiosRequestConfig, 'proxy' | 'httpAgent' | 'httpsAgent'>;
+
+const supportedProxyProtocols = new Set(['http:', 'https:', 'socks5:', 'socks5h:']);
 
 export function normalizeProxyUrl(value: string) {
   const trimmed = value.trim();
@@ -30,7 +37,7 @@ export function normalizeProxyUrl(value: string) {
     throw new Error('INVALID_PROXY_URL');
   }
 
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+  if (!supportedProxyProtocols.has(parsed.protocol)) {
     throw new Error('UNSUPPORTED_PROXY_PROTOCOL');
   }
   if (!parsed.hostname || !parsed.port) {
@@ -45,6 +52,10 @@ export function normalizeProxyUrl(value: string) {
 
 export function proxyUrlToAxiosProxy(url: string): AxiosProxyOptions {
   const parsed = new URL(normalizeProxyUrl(url));
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('UNSUPPORTED_AXIOS_PROXY_PROTOCOL');
+  }
+
   const proxy: AxiosProxyOptions = {
     protocol: parsed.protocol.replace(/:$/, ''),
     host: parsed.hostname,
@@ -59,4 +70,26 @@ export function proxyUrlToAxiosProxy(url: string): AxiosProxyOptions {
   }
 
   return proxy;
+}
+
+export function proxyUrlToAxiosRequestOptions(url: string): AxiosProxyRequestOptions {
+  const normalizedUrl = normalizeProxyUrl(url);
+  const parsed = new URL(normalizedUrl);
+
+  if (parsed.protocol === 'socks5:' || parsed.protocol === 'socks5h:') {
+    const agent = new SocksProxyAgent(normalizedUrl);
+    return {
+      proxy: false,
+      httpAgent: agent,
+      httpsAgent: agent,
+    };
+  }
+
+  return {
+    proxy: proxyUrlToAxiosProxy(normalizedUrl),
+  };
+}
+
+export function proxyUrlToCurlArgs(url: string) {
+  return ['--proxy', normalizeProxyUrl(url)];
 }
