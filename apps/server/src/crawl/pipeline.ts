@@ -180,6 +180,7 @@ const DEFAULT_START_URL = 'https://www.anytimemailbox.com/l/usa';
 const DEFAULT_REQUEST_DELAY_MS = Object.freeze({ min: 200, max: 900 });
 const NETWORK_RETRY_DELAY_MS = 5000;
 const MAX_NETWORK_RETRIES = 10;
+const CLOUDFLARE_CURL_RETRY_DELAYS_MS = Object.freeze([5000, 10000]);
 const CRAWL_HEADER_PROFILES = Object.freeze([
   DEFAULT_CRAWL_HEADERS,
   Object.freeze({
@@ -429,10 +430,20 @@ export class CrawlPipeline {
         return;
       }
 
-      const detailResult = await this.fetcher.fetchHtml(location.url, {
-        referer: state.url,
-        signal: runOptions.signal,
-      });
+      let detailResult: CrawlFetchResult;
+      try {
+        detailResult = await this.fetcher.fetchHtml(location.url, {
+          referer: state.url,
+          signal: runOptions.signal,
+        });
+      } catch (error) {
+        if (runOptions.signal?.aborted || isAbortError(error)) {
+          throw error;
+        }
+
+        this.markAddressDetailSkipped(taskId, state, location, createAddressDetailFetchMessage(location.url, error));
+        return;
+      }
       const detail = parseLocationDetail(detailResult.html, location.url);
 
       if (!detail.myearUrl) {
@@ -1434,7 +1445,9 @@ export class HttpCrawlFetcher implements CrawlFetcher {
     }
 
     throw new Error(`Unable to fetch ${url}`);
-  }  private async fetchWithCurlFallback(
+  }
+
+  private async fetchWithCurlFallback(
     url: string,
     headers: Record<string, string>,
     proxy: CrawlProxy | null,
@@ -1443,14 +1456,29 @@ export class HttpCrawlFetcher implements CrawlFetcher {
   ) {
     if (!isAxiosBlockedResponse(error)) return null;
 
-    try {
-      const result = await this.curlFetch(url, { headers, proxy, signal });
-      return result.status >= 200 && result.status < 400 && !isCloudflareChallengeHtml(result.html)
-        ? result
-        : null;
-    } catch {
-      return null;
+    const retryDelays = Number((error as { response?: { status?: unknown } }).response?.status) === 429
+      ? CLOUDFLARE_CURL_RETRY_DELAYS_MS
+      : [];
+
+    for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+      try {
+        const result = await this.curlFetch(url, { headers, proxy, signal });
+        if (result.status >= 200 && result.status < 400 && !isCloudflareChallengeHtml(result.html)) {
+          return result;
+        }
+      } catch (curlError) {
+        if (signal?.aborted || isAbortError(curlError)) {
+          throw curlError;
+        }
+      }
+
+      const retryDelay = retryDelays[attempt];
+      if (retryDelay === undefined) break;
+      await this.sleep(retryDelay);
+      if (signal?.aborted) throw error;
     }
+
+    return null;
   }
 
   private async waitBeforeRequest() {
@@ -1678,6 +1706,11 @@ function parseListAddress(value: string) {
     state: match ? match[3] : '',
     postalCode: match ? match[4] : '',
   };
+}
+
+function createAddressDetailFetchMessage(url: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return `Unable to fetch address detail: ${url}; ${message}`;
 }
 
 function createMissingSignupLinkError(url: string, result: CrawlFetchResult) {

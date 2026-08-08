@@ -207,6 +207,54 @@ test('HTTP crawl fetcher retries once with the same proxy after Axios returns 42
   }
 });
 
+test('HTTP crawl fetcher backs off and retries curl after Cloudflare 429 challenges', async () => {
+  const getMock = mock.method(axios, 'get', async () => {
+    throw {
+      isAxiosError: true,
+      response: {
+        status: 429,
+        headers: { 'cf-mitigated': 'challenge', server: 'cloudflare' },
+        data: '<html><title>Just a moment...</title></html>',
+      },
+    };
+  });
+  const delays: number[] = [];
+  let curlCallCount = 0;
+  const fetcher = new HttpCrawlFetcher({
+    random: () => 0,
+    requestDelayMs: { min: 0, max: 0 },
+    sleep: async (delayMs) => {
+      delays.push(delayMs);
+    },
+    curlFetch: async (url) => {
+      curlCallCount += 1;
+      return curlCallCount < 3
+        ? {
+            url,
+            finalUrl: url,
+            html: '<html><title>Just a moment...</title><script src="/cf_chl.js"></script></html>',
+            status: 429,
+          }
+        : {
+            url,
+            finalUrl: url,
+            html: '<html><title>Anytime Mailbox</title></html>',
+            status: 200,
+          };
+    },
+  });
+
+  try {
+    const result = await fetcher.fetchHtml('https://www.anytimemailbox.com/s/test-address');
+
+    assert.equal(result.status, 200);
+    assert.equal(curlCallCount, 3);
+    assert.deepEqual(delays, [5000, 10000]);
+  } finally {
+    getMock.mock.restore();
+  }
+});
+
 test('HTTP crawl fetcher rejects a Cloudflare challenge returned by curl fallback', async () => {
   const getMock = mock.method(axios, 'get', async () => {
     throw {
@@ -221,6 +269,7 @@ test('HTTP crawl fetcher rejects a Cloudflare challenge returned by curl fallbac
   const fetcher = new HttpCrawlFetcher({
     random: () => 0,
     requestDelayMs: { min: 0, max: 0 },
+    sleep: async () => {},
     curlFetch: async (url) => ({
       url,
       finalUrl: url,
@@ -753,6 +802,68 @@ test('skips address detail fetch when myear url is missing', async () => {
   assert.match(staged.errorMessage, /Unable to parse mailbox signup link/);
   assert.equal(staged.myearUrl, null);
   assert.equal(importedCount.count, 0);
+});
+
+test('skips one failed address detail and continues importing the remaining addresses', async () => {
+  const failedAddress = crawledAddress({
+    name: 'Peoria - Union Hills Dr',
+    detailUrl: 'https://www.anytimemailbox.com/s/peoria-9015-w-union-hills-drive',
+    street: '9015 W Union Hills Dr',
+    city: 'Peoria',
+    state: 'AZ',
+    zip: '85382',
+    price: 'US$ 12.99',
+    mailboxNumbers: ['1'],
+  });
+  const successfulAddress = crawledAddress({
+    name: 'Chandler - Germann Rd',
+    detailUrl: 'https://www.anytimemailbox.com/s/chandler-2350-e-germann-road',
+    street: '2350 E Germann Rd Ste 30',
+    city: 'Chandler',
+    state: 'AZ',
+    zip: '85286',
+    price: 'US$ 16.99',
+    mailboxNumbers: ['12', '29'],
+  });
+  const addresses = [failedAddress, successfulAddress];
+  const baseFetcher = createFixtureFetcher(addresses);
+  const fetcher: CrawlFetcher = {
+    async fetchHtml(url, options) {
+      if (url === failedAddress.detailUrl) {
+        throw new Error(`Cloudflare challenge blocked ${url} status=429`);
+      }
+      return baseFetcher.fetchHtml(url, options);
+    },
+  };
+  const harness = buildHarness(addresses, {
+    async lookupAddresses(_credentials, inputs) {
+      return inputs.map((input): SmartyLookupResult => ({
+        inputId: input.inputId,
+        rdi: 'Residential',
+        cmra: 'No',
+        raw: { analysis: { dpv_cmra: 'N' }, metadata: { rdi: 'Residential' } },
+      }));
+    },
+  }, { fetcher });
+  const task = harness.taskService.createManualTask({ createdBy: 'Test Admin' });
+
+  await harness.pipeline.runTask(task.id);
+
+  const skipped = harness.database.sqlite
+    .prepare(`
+      SELECT crawl_status AS crawlStatus, error_message AS errorMessage
+      FROM crawl_discovered_addresses
+      WHERE task_id = ? AND anytime_url = ?
+    `)
+    .get(task.id, failedAddress.detailUrl) as { crawlStatus: string; errorMessage: string };
+  const imported = harness.database.sqlite
+    .prepare('SELECT anytime_url AS anytimeUrl FROM addresses')
+    .all() as Array<{ anytimeUrl: string }>;
+
+  assert.equal(skipped.crawlStatus, 'skipped');
+  assert.match(skipped.errorMessage, /Cloudflare challenge.*status=429/);
+  assert.deepEqual(imported, [{ anytimeUrl: successfulAddress.detailUrl }]);
+  assertTaskCompleted(harness.database, task.id);
 });
 
 test('refetches existing staged details when myear url is missing', async () => {
